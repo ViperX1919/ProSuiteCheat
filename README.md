@@ -1,6 +1,8 @@
 # ProSuiteCheat
 
 A fully AI-coded colourbot cheat created in just three days. Surprisingly powerful and currently undetected in most games.
+<img width="996" height="772" alt="image" src="https://github.com/user-attachments/assets/88bd25c0-d9b0-4380-a2fd-fff56e6961ac" />
+GUI
 
 ## 🔧 Core Features
 
