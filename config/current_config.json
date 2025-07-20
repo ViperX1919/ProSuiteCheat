@@ -16,13 +16,13 @@
     "arraylist_color": 4287107362,
     "arraylist_size": 14,
     "arraylist_pos": [
-        920,
-        522
+        0,
+        0
     ],
     "arraylist_style": "Default",
     "radar_pos": [
-        800,
-        380
+        0,
+        0
     ],
     "radar_color": "#881122",
     "ui_theme_color": "#881122",
@@ -44,15 +44,15 @@
         "glow": false,
         "tracers": false,
         "radar": false,
-        "show_fov": true,
+        "show_fov": false,
         "arraylist": false
     },
     "keybinds": {},
     "sections_collapsed": {
         "EnableSmoothAim": true,
         "EnableESP": true,
-        "EnableRadar": false,
-        "ShowFOV": false,
+        "EnableRadar": true,
+        "ShowFOV": true,
         "EnableArraylist": true
     }
 }

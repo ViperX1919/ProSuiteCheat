@@ -1,105 +1,67 @@
-ProSuiteCheat - Dependency Installation Guide
----------------------------------------------
+# ProSuiteCheat
 
-This guide will help you set up everything needed to run ProSuiteCheat using Python.
+A fully AI-coded colourbot cheat created in just three days. Surprisingly powerful and currently undetected in most games.
 
-REQUIREMENTS:
-- Windows 10 or 11
-- Python 3.8 or newer
-- pip (Python package installer)
+## 🔧 Core Features
 
----------------------------------------------
-STEP 1: Install Python (if you haven’t already)
----------------------------------------------
+### 🎯 Aimbot System
+- Smooth aim assist with adjustable sensitivity and speed  
+- Multiple aim priorities (Proximity, Size-based targeting)  
+- Configurable aim positions (Head, Body, Custom via Y-offset)  
+- Color-based detection with adjustable tolerance  
+- Prediction aim with velocity tracking and visual feedback  
+- Hold or toggle keybind support  
 
-1. Go to https://www.python.org/downloads/
-2. Download Python 3.8 or newer
-3. During installation, make sure to check:
-   [x] Add Python to PATH
+### 👁️ Visual Enhancements (ESP)
+- Real-time target highlighting with multiple display modes  
+- Box ESP with customizable colors  
+- ESP types: Corner, Head, etc.  
+- Glow effects with opacity control  
+- Tracer lines from screen bottom to targets  
+- FOV circle overlay with configurable radius  
 
-To confirm Python is installed, open Command Prompt and run:
-    python --version
+### 🧭 Radar System
+- 2D radar showing real-time target positions  
+- FOV cone matching aim radius  
+- Tracks distance and angle to targets  
+- Updates dynamically based on radar size  
 
----------------------------------------------
-STEP 2: Upgrade pip (optional, but recommended)
----------------------------------------------
+### 📋 Arraylist
+- Live overlay showing all active features  
+- Custom styles: Default, Classic, Edged  
+- Adjustable font size and colors  
+- Fully repositionable anywhere on screen  
 
-Run:
-    python -m pip install --upgrade pip
+## 🖥️ User Interface
 
----------------------------------------------
-STEP 3: Install Required Dependencies
----------------------------------------------
+- Modern UI design (inspired by [this Figma layout](https://www.figma.com/community/file/1483948276194955038))  
+- Dark and Light theme support with full color customization  
+- Smooth transitions and animated navigation  
+- Collapsible categories for clean feature management  
+- Custom toggle switches and sliders  
+- Keybind configuration for every feature  
+- Settings saved/loaded using JSON files  
 
-Run this command to install all dependencies:
+## 🛠️ Technical Highlights
 
-    pip install PySide6 opencv-python numpy mss pynput
+- OpenCV-based vision targeting  
+- HSV color space for accurate detection  
+- Contour grouping for enhanced recognition  
+- Real-time screen capture and processing  
+- Multi-threaded input for better performance  
+- Efficient overlay rendering  
+- Minimal system resource usage  
+- Windows-specific performance optimizations  
 
----------------------------------------------
-STEP 4: Run the Script
----------------------------------------------
+## 🔐 Safety & Compatibility
 
-Run:
+- Uses Windows `ctypes` for system integration  
+- Raw input simulation for smooth and precise control  
+- Overlay does not interfere with game input or focus  
 
-    python ProSuiteCheat.py
+## 📦 Requirements
 
-
----------------------------------------------
-TROUBLESHOOTING: Python Not Found Error
----------------------------------------------
-
-If you see this error when running Python commands:
-
-    Python was not found; run without arguments to install from the Microsoft Store...
-
-Try the following:
-
-1. **Check if Python is installed and added to PATH:**
-
-   - Open Command Prompt and run:
-     ```
-     python --version
-     ```
-   - If it still shows the error, Python is either not installed or not added to your system PATH.
-
-2. **Add Python to PATH manually:**
-
-   - Press **Win + S**, search **Environment Variables**, and open **Edit the system environment variables**.
-   - Click **Environment Variables**.
-   - Under **System variables**, select `Path` and click **Edit**.
-   - Click **New** and add these paths (adjust if your install location is different):
-     ```
-     C:\Users\<your-username>\AppData\Local\Programs\Python\Python3x\
-     C:\Users\<your-username>\AppData\Local\Programs\Python\Python3x\Scripts\
-     ```
-   - Click OK to save all changes.
-   - Restart Command Prompt and try `python --version` again.
-
-3. **Use the Python launcher `py` as an alternative:**
-
-   - Instead of `python`, run your script with:
-     ```
-     py ProSuiteCheat.py
-     ```
-   - This launcher is installed by default with Python on Windows.
-
----
-
----------------------------------------------
-TROUBLESHOOTING: OpenCV or pip issues
----------------------------------------------
-
-- If you get errors related to OpenCV, try:
-    ```
-    pip uninstall opencv-python
-    pip install opencv-python-headless
-    ```
-
-- If `pip` is not recognized, try:
-    ```
-    python -m ensurepip --upgrade
-    ```
-
----
-
-That’s it! Enjoy using ProSuiteCheat.
+- Windows 10 or 11  
+- Python 3.8 or newer  
+- Required packages:  
+  `PySide6`, `opencv-python`, `numpy`, `mss`, `pynput`

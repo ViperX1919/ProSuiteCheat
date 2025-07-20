@@ -120,6 +120,123 @@ class SmoothAimer:
         c_u = Input(ctypes.c_ulong(0), i)
         self._send_input(c_u)
 
+class KalmanFilter:
+    """Simple 2D Kalman filter for target prediction"""
+    def __init__(self):
+        # State: [x, y, vx, vy] (position and velocity)
+        self.state = np.array([0., 0., 0., 0.])
+        
+        # State transition matrix (constant velocity model)
+        self.F = np.array([
+            [1, 0, 1, 0],  # x = x + vx
+            [0, 1, 0, 1],  # y = y + vy
+            [0, 0, 1, 0],  # vx = vx (constant)
+            [0, 0, 0, 1]   # vy = vy (constant)
+        ])
+        
+        # Measurement matrix (we only measure position)
+        self.H = np.array([
+            [1, 0, 0, 0],
+            [0, 1, 0, 0]
+        ])
+        
+        # Process noise covariance (higher for more responsive tracking)
+        self.Q = np.eye(4) * 0.2
+        
+        # Measurement noise covariance (lower for more trust in measurements)
+        self.R = np.eye(2) * 0.2
+        
+        # State covariance
+        self.P = np.eye(4) * 2.0
+        
+        self.initialized = False
+    
+    def predict(self, dt=1.0):
+        """Predict next state"""
+        if not self.initialized:
+            return self.state[:2]
+        
+        # Update state transition matrix for dt
+        F_dt = np.array([
+            [1, 0, dt, 0],  # x = x + vx*dt
+            [0, 1, 0, dt],  # y = y + vy*dt
+            [0, 0, 1, 0],   # vx = vx
+            [0, 0, 0, 1]    # vy = vy
+        ])
+        
+        # Predict state
+        self.state = F_dt @ self.state
+        
+        # Predict covariance
+        self.P = F_dt @ self.P @ F_dt.T + self.Q
+        
+        return self.state[:2]
+    
+    def update(self, measurement):
+        """Update with new measurement"""
+        if not self.initialized:
+            self.state[:2] = measurement
+            self.initialized = True
+            self.last_measurement = measurement.copy()
+            return
+        
+        # Calculate velocity from position change for better initialization
+        if hasattr(self, 'last_measurement'):
+            velocity = measurement - self.last_measurement
+            
+            # For 3D FPS games, we need to be more careful about velocity estimation
+            # Only update velocity if the movement is significant enough
+            velocity_mag = np.linalg.norm(velocity)
+            if velocity_mag > 0.5:  # Only update for significant movements
+                # Use velocity to improve initial velocity estimate
+                if not hasattr(self, 'velocity_initialized'):
+                    self.state[2:4] = velocity
+                    self.velocity_initialized = True
+                else:
+                    # Smooth velocity updates for more stable prediction
+                    self.state[2:4] = self.state[2:4] * 0.8 + velocity * 0.2
+        
+        self.last_measurement = measurement.copy()
+        
+        # Kalman gain - use solve instead of inv for better performance
+        S = self.H @ self.P @ self.H.T + self.R
+        K = self.P @ self.H.T @ np.linalg.solve(S, np.eye(S.shape[0]))
+        
+        # Update state
+        y = measurement - self.H @ self.state
+        self.state = self.state + K @ y
+        
+        # Update covariance
+        I = np.eye(4)
+        self.P = (I - K @ self.H) @ self.P
+    
+    def get_velocity(self):
+        """Get current velocity estimate"""
+        return self.state[2:4] if self.initialized else np.array([0., 0.])
+    
+    def get_prediction_confidence(self):
+        """Get prediction confidence based on covariance"""
+        if not self.initialized:
+            return 0.0
+        # Use the trace of position covariance as confidence measure
+        return 1.0 / (1.0 + np.trace(self.P[:2, :2]))
+    
+    def reset(self):
+        """Reset the filter"""
+        self.state = np.array([0., 0., 0., 0.])
+        self.P = np.eye(4) * 2.0
+        self.initialized = False
+        if hasattr(self, 'last_measurement'):
+            delattr(self, 'last_measurement')
+        if hasattr(self, 'velocity_initialized'):
+            delattr(self, 'velocity_initialized')
+    
+    def handle_target_loss(self):
+        """Handle target loss by increasing uncertainty"""
+        if self.initialized:
+            # Increase position uncertainty when target is lost
+            self.P[:2, :2] *= 2.0
+
 class InputListener(QtCore.QObject, threading.Thread):
     input_pressed_signal = QtCore.Signal(str, bool)
     input_set_signal = QtCore.Signal(str, str)
@@ -1163,7 +1280,7 @@ class MainWindow(QWidget):
         self.input_listener = InputListener()
         self.key_press_states = {}
         self.last_target_pos = None
-        self.smoothed_velocity = (0, 0)
+        self.kalman_filter = KalmanFilter()
         self.priority_mode = "Proximity"
         self.detection_color = QColor(255, 0, 0)
         self.prediction_color = QColor(0, 255, 255)
@@ -1200,9 +1317,6 @@ class MainWindow(QWidget):
         
         self.update_ui_theme("Dark")
         QtCore.QTimer.singleShot(0, lambda: self.nav.nav_list.setCurrentRow(0))
-        
-        # Load default config if it exists
-        QtCore.QTimer.singleShot(50, self.load_default_config)
         
         # Ensure arraylist visibility is set correctly on startup
         QtCore.QTimer.singleShot(100, lambda: self.on_arraylist_toggled(self.arraylist_toggle.isChecked()))
@@ -1283,7 +1397,7 @@ class MainWindow(QWidget):
         c = QColorDialog.getColor(self.radar_widget.esp_color, self)
         if c.isValid():
             self.radar_widget.esp_color = c
-            self.radar_color_button.setStyleSheet(f"background-color:{c.name()};border-radius:5px;")
+            self.style_color_button(self.radar_color_button, c)
             self.radar_widget.update()
 
     def on_show_fov_toggled(self, checked):
@@ -1308,13 +1422,13 @@ class MainWindow(QWidget):
     def create_and_store_slider(self, text, min_val, max_val, val):
         slider_widget, slider, label, value_label = create_slider(text, min_val, max_val, val)
         value_label.setObjectName("value_label")
-        slider.setStyleSheet(f"QSlider::groove:horizontal{{height:6px;background:#333;border-radius:3px}}QSlider::handle:horizontal{{width:12px;background:{self.theme_color.name()};margin:-4px 0;border-radius:6px}}")
+        self.style_slider(slider)
         self.all_controllable_widgets.append({'widget':slider_widget, 'controls':[slider, label, value_label], 'type':'slider'})
         return slider_widget, slider
     
     def create_and_store_color_picker(self, text, initial_color_str="#FF0000"):
         picker_widget, button, label = create_color_picker(text)
-        button.setStyleSheet(f"background-color:{initial_color_str};border-radius:5px;")
+        self.style_color_button(button, QColor(initial_color_str))
         self.all_controllable_widgets.append({'widget':picker_widget, 'controls':[button, label], 'type':'picker'})
         return picker_widget, button
 
@@ -1327,6 +1441,22 @@ class MainWindow(QWidget):
         kb_widget, button = create_keybind_button(default_text)
         self.all_controllable_widgets.append({'widget':kb_widget, 'controls':[button], 'type':'keybind'})
         return kb_widget, button
+
+    def style_color_button(self, button, color):
+        """Helper method to style color buttons consistently"""
+        button.setStyleSheet(f"background-color:{color.name()};border-radius:5px;")
+    
+    def style_slider(self, slider):
+        """Helper method to style sliders consistently"""
+        slider.setStyleSheet(f"QSlider::groove:horizontal{{height:6px;background:#333;border-radius:3px}}QSlider::handle:horizontal{{width:12px;background:{self.theme_color.name()};margin:-4px 0;border-radius:6px}}")
+    
+    def apply_slider_setting(self, slider, settings, key, default):
+        """Helper method to apply slider settings safely"""
+        slider.setValue(settings.get(key, default))
+    
+    def apply_dropdown_setting(self, dropdown, settings, key, default):
+        """Helper method to apply dropdown settings safely"""
+        dropdown.setCurrentText(settings.get(key, default))
 
     def setup_pages(self):
         # --- Aim Page ---
@@ -1350,7 +1480,7 @@ class MainWindow(QWidget):
         smooth_w, self.smooth_slider = self.create_and_store_slider("Smoothness", 1, 100, 50)
         speed_w, self.speed_slider = self.create_and_store_slider("Speed", 1, 100, 10)
         predict_toggle_w, predict_toggle_s = self.create_and_store_toggle("Prediction Aim")
-        predict_factor_w, self.predict_slider = self.create_and_store_slider("Prediction Factor", 0, 100, 10)
+        predict_factor_w, self.predict_slider = self.create_and_store_slider("Prediction Factor", 1, 50, 5)
         prediction_visual_toggle_w, prediction_visual_toggle_s = self.create_and_store_toggle("Show Prediction Aim Visual")
         self.hack_widgets['prediction'] = {'toggle': predict_toggle_s, 'display_name': "Prediction"}
         self.hack_widgets['prediction_visual'] = {'toggle': prediction_visual_toggle_s, 'display_name': "Prediction Visual"}
@@ -1458,8 +1588,6 @@ class MainWindow(QWidget):
         self.pages["settings"] = CheatMenuPage("Settings")
         self.save_button = QPushButton("Save Settings")
         self.load_button = QPushButton("Load Settings")
-        self.save_current_button = QPushButton("Save Current Config")
-        self.load_default_button = QPushButton("Load Default Config")
         theme_color_w, self.theme_color_button = self.create_and_store_color_picker("UI Theme Color", self.theme_color.name())
         theme_select_w, self.theme_select_dropdown = self.create_and_store_dropdown("UI Theme", ["Dark", "Light"])
         self.reset_ui_button = QPushButton("Reset UI to Default")
@@ -1467,8 +1595,6 @@ class MainWindow(QWidget):
         self.pages["settings"].add_themeable_label("Config")
         self.pages["settings"].add_widget(self.save_button)
         self.pages["settings"].add_widget(self.load_button)
-        self.pages["settings"].add_widget(self.save_current_button)
-        self.pages["settings"].add_widget(self.load_default_button)
         
         self.pages["settings"].add_separator()
         
@@ -1497,7 +1623,7 @@ class MainWindow(QWidget):
             if 'keybind_button' in widgets:
                 widgets['keybind_button'].clicked.connect(lambda checked=False, n=name: self.input_listener.set_new_bind(n))
         
-        self.hack_widgets['aim']['toggle'].toggled.connect(lambda: (setattr(self, 'last_target_pos', None), setattr(self, 'smoothed_velocity', (0, 0))))
+        self.hack_widgets['aim']['toggle'].toggled.connect(lambda: (setattr(self, 'last_target_pos', None), self.kalman_filter.reset()))
         self.det_color_button.clicked.connect(self.open_detection_color_dialog)
         self.pred_color_button.clicked.connect(self.open_prediction_color_dialog)
         self.smooth_slider.valueChanged.connect(lambda v: setattr(self.smoother, 'smoothness', v))
@@ -1529,8 +1655,6 @@ class MainWindow(QWidget):
         self.reset_ui_button.clicked.connect(self.reset_ui_theme)
         self.save_button.clicked.connect(self.save_settings)
         self.load_button.clicked.connect(self.load_settings)
-        self.save_current_button.clicked.connect(self.save_current_config)
-        self.load_default_button.clicked.connect(self.load_default_config)
         
         # Create default config directory if it doesn't exist
         # For standalone exe, use user's documents folder
@@ -1658,114 +1782,8 @@ class MainWindow(QWidget):
         except Exception as e:
             logging.error(f"Error loading settings: {e}")
 
-    def save_current_config(self, filename="current_config.json"):
-        """Save current settings to the config directory"""
-        try:
-            config_path = os.path.join(self.config_dir, filename)
-            settings = {
-                # Aim settings
-                'fov': self.fov_slider.value(),
-                'detection_color': self.detection_color.name(),
-                'prediction_color': self.prediction_color.name(),
-                'tolerance': self.tolerance_slider.value(),
-                'smoothness': self.smooth_slider.value(),
-                'speed': self.speed_slider.value(),
-                'priority': self.priority_dropdown.currentText(),
-                'aim_pos': self.aim_pos_dropdown.currentText(),
-                'y_offset': self.y_offset_slider.value(),
-                'prediction_factor': self.predict_slider.value(),
-                
-                # ESP settings
-                'esp_color': self.esp_color.name(),
-                'opacity': self.opacity_slider.value(),
-                'esp_mode': self.esp_mode_dropdown.currentText(),
-                
-                # Arraylist settings
-                'arraylist_enabled': self.arraylist_toggle.isChecked(),
-                'arraylist_color': self.array_list_color.rgba(),
-                'arraylist_size': self.arraylist_size_slider.value(),
-                'arraylist_pos': [self.array_list.x(), self.array_list.y()],
-                'arraylist_style': self.arraylist_style_dropdown.currentText(),
-                
-                # Radar settings
-                'radar_pos': [self.radar_widget.x(), self.radar_widget.y()],
-                'radar_color': self.radar_widget.esp_color.name(),
-                
-                # UI settings
-                'ui_theme_color': self.theme_color.name(),
-                'ui_theme': self.theme_select_dropdown.currentText(),
-                'window_pos': [self.x(), self.y()],
-                'window_size': [self.width(), self.height()],
-                
-                # Toggle states
-                'toggles': {name: w['toggle'].isChecked() for name, w in self.hack_widgets.items() if 'toggle' in w},
-                
-                # Keybinds
-                'keybinds': self.input_listener.keybinds,
-                
-                # Section collapsed states
-                'sections_collapsed': {s.objectName(): s.is_collapsed() for s in self.sections}
-            }
-            
-            with open(config_path, 'w') as f:
-                json.dump(settings, f, indent=4)
-            logging.info(f"Current config saved to {config_path}")
-            
-        except Exception as e:
-            logging.error(f"Error saving current config: {e}")
-
-    def load_default_config(self):
-        """Load the default config if it exists"""
-        default_config_path = os.path.join(self.config_dir, "default_config.json")
-        if os.path.exists(default_config_path):
-            try:
-                with open(default_config_path, 'r') as f:
-                    settings = json.load(f)
-                self.apply_settings(settings)
-                logging.info("Default config loaded")
-            except Exception as e:
-                logging.error(f"Error loading default config: {e}")
-                # Try to create a basic default config
-                self.create_basic_default_config()
-        else:
-            # Create a basic default config if none exists
-            self.create_basic_default_config()
-    
-    def create_basic_default_config(self):
-        """Create a basic default config with current settings"""
-        try:
-            basic_config = {
-                'fov': self.fov_slider.value(),
-                'tolerance': 80,
-                'smoothness': 50,
-                'speed': 10,
-                'priority': 'Proximity',
-                'aim_pos': 'Body',
-                'y_offset': 0,
-                'prediction_factor': 10,
-                'esp_color': self.esp_color.name(),
-                'opacity': 100,
-                'esp_mode': 'Box',
-                'arraylist_enabled': False,
-                'arraylist_color': self.array_list_color.rgba(),
-                'arraylist_size': 14,
-                'arraylist_style': 'Default',
-                'ui_theme_color': self.theme_color.name(),
-                'ui_theme': 'Dark',
-                'toggles': {},
-                'keybinds': {},
-                'sections_collapsed': {}
-            }
-            
-            default_config_path = os.path.join(self.config_dir, "default_config.json")
-            with open(default_config_path, 'w') as f:
-                json.dump(basic_config, f, indent=4)
-            logging.info("Created basic default config")
-        except Exception as e:
-            logging.error(f"Error creating basic default config: {e}")
-
     def apply_settings(self, settings):
-        """Apply settings from a dictionary (used by load_default_config)"""
+        """Apply settings from a dictionary"""
         try:
             # Load aim settings
             # Update FOV range first, then load the saved value
@@ -1781,32 +1799,32 @@ class MainWindow(QWidget):
                 # Set default FOV if no saved value
                 self.set_default_fov()
                 
-            self.tolerance_slider.setValue(settings.get('tolerance', 80))
-            self.smooth_slider.setValue(settings.get('smoothness', 50))
-            self.speed_slider.setValue(settings.get('speed', 10))
-            self.priority_dropdown.setCurrentText(settings.get('priority', 'Proximity'))
-            self.aim_pos_dropdown.setCurrentText(settings.get('aim_pos', 'Body'))
-            self.y_offset_slider.setValue(settings.get('y_offset', 0))
-            self.predict_slider.setValue(settings.get('prediction_factor', 10))
+            self.apply_slider_setting(self.tolerance_slider, settings, 'tolerance', 80)
+            self.apply_slider_setting(self.smooth_slider, settings, 'smoothness', 50)
+            self.apply_slider_setting(self.speed_slider, settings, 'speed', 10)
+            self.apply_dropdown_setting(self.priority_dropdown, settings, 'priority', 'Proximity')
+            self.apply_dropdown_setting(self.aim_pos_dropdown, settings, 'aim_pos', 'Body')
+            self.apply_slider_setting(self.y_offset_slider, settings, 'y_offset', 0)
+            self.apply_slider_setting(self.predict_slider, settings, 'prediction_factor', 5)
             
             # Load colors
             det_color = QColor(settings.get('detection_color', '#FF0000'))
             self.detection_color = det_color
-            self.det_color_button.setStyleSheet(f"background-color:{det_color.name()};border-radius:5px;")
+            self.style_color_button(self.det_color_button, det_color)
             
             pred_color = QColor(settings.get('prediction_color', '#00FFFF'))
             self.prediction_color = pred_color
-            self.pred_color_button.setStyleSheet(f"background-color:{pred_color.name()};border-radius:5px;")
+            self.style_color_button(self.pred_color_button, pred_color)
             self.prediction_aim_overlay.set_color(pred_color)
             
             # Load ESP settings
             esp_color = QColor(settings.get('esp_color', self.theme_color.name()))
             self.esp_color = esp_color
-            self.esp_color_button.setStyleSheet(f"background-color:{esp_color.name()};border-radius:5px;")
+            self.style_color_button(self.esp_color_button, esp_color)
             self.fov_overlay.set_color(esp_color)
             self.render_overlay.color = esp_color
-            self.opacity_slider.setValue(settings.get('opacity', 100))
-            self.esp_mode_dropdown.setCurrentText(settings.get('esp_mode', 'Box'))
+            self.apply_slider_setting(self.opacity_slider, settings, 'opacity', 100)
+            self.apply_dropdown_setting(self.esp_mode_dropdown, settings, 'esp_mode', 'Box')
             
             # Load Arraylist settings
             self.arraylist_toggle.setChecked(settings.get('arraylist_enabled', False))
@@ -1817,20 +1835,20 @@ class MainWindow(QWidget):
                 al_color = QColor(al_color_value or self.theme_color.name())
             
             self.array_list_color = al_color
-            self.arraylist_color_button.setStyleSheet(f"background-color:{al_color.name()};border-radius:5px;")
+            self.style_color_button(self.arraylist_color_button, al_color)
             self.array_list.set_text_color(al_color)
-            self.arraylist_size_slider.setValue(settings.get('arraylist_size', 14))
+            self.apply_slider_setting(self.arraylist_size_slider, settings, 'arraylist_size', 14)
             
             al_pos = settings.get('arraylist_pos')
             if al_pos and len(al_pos) == 2:
                 self.array_list.move(al_pos[0], al_pos[1])
                 
-            self.arraylist_style_dropdown.setCurrentText(settings.get('arraylist_style', 'Default'))
+            self.apply_dropdown_setting(self.arraylist_style_dropdown, settings, 'arraylist_style', 'Default')
             
             # Load Radar settings
             radar_color = QColor(settings.get('radar_color', self.theme_color.name()))
             self.radar_widget.esp_color = radar_color
-            self.radar_color_button.setStyleSheet(f"background-color:{radar_color.name()};border-radius:5px;")
+            self.style_color_button(self.radar_color_button, radar_color)
             
             radar_pos = settings.get('radar_pos')
             if radar_pos and len(radar_pos) == 2:
@@ -1839,7 +1857,7 @@ class MainWindow(QWidget):
             # Load UI settings
             ui_theme_color = settings.get('ui_theme_color', NEW_RED)
             self.theme_color = QColor(ui_theme_color)
-            self.theme_select_dropdown.setCurrentText(settings.get('ui_theme', 'Dark'))
+            self.apply_dropdown_setting(self.theme_select_dropdown, settings, 'ui_theme', 'Dark')
             
             # Load window position and size
             window_pos = settings.get('window_pos')
@@ -1979,8 +1997,19 @@ class MainWindow(QWidget):
             is_esp_on = self.hack_widgets['esp']['toggle'].isChecked()
             is_trigger_on = self.hack_widgets['triggerbot']['toggle'].isChecked()
             is_radar_on = self.hack_widgets['radar']['toggle'].isChecked()
+            prediction_enabled = self.hack_widgets['prediction']['toggle'].isChecked()
 
             should_scan = is_trigger_on or is_esp_on or is_radar_on or (is_aim_enabled and is_aim_pressed)
+            
+            # Performance monitoring (only log occasionally)
+            if hasattr(self, '_frame_count'):
+                self._frame_count += 1
+            else:
+                self._frame_count = 1
+            
+            # Log performance every 1000 frames
+            if self._frame_count % 1000 == 0:
+                logging.info(f"Performance: Frame {self._frame_count}, Prediction: {prediction_enabled}")
             
             if not should_scan:
                 if self.render_overlay.render_data: self.render_overlay.clear_render_data()
@@ -2022,7 +2051,15 @@ class MainWindow(QWidget):
             grouped_contours = self.group_nearby_contours(valid_contours, max_distance=80)
 
             if not grouped_contours:
-                self.last_target_pos = None; self.smoothed_velocity = (0, 0)
+                self.last_target_pos = None
+                if prediction_enabled:
+                    self.kalman_filter.handle_target_loss()  # Only update Kalman if prediction is enabled
+                    # Clear smoothed velocity when target is lost
+                    if hasattr(self, 'smoothed_velocity'):
+                        delattr(self, 'smoothed_velocity')
+                    # Clear aim smoothing when target is lost
+                    if hasattr(self, 'last_aim_pos'):
+                        delattr(self, 'last_aim_pos')
                 if self.render_overlay.render_data: self.render_overlay.clear_render_data()
                 self.prediction_aim_overlay.clear_position()
                 if is_radar_on: self.radar_widget.update_targets([])
@@ -2073,31 +2110,100 @@ class MainWindow(QWidget):
                 # Calculate current screen position
                 current_screen_pos = QPoint(int(fov_mon["left"] + cx), int(fov_mon["top"] + cy))
                 
-                # Calculate velocity lines for prediction visualization
+                # Calculate velocity lines for prediction visualization 
                 velocity_lines = []
-                if self.hack_widgets['prediction']['toggle'].isChecked() and self.last_target_pos:
-                    raw_vel = (cx - self.last_target_pos[0], cy - self.last_target_pos[1])
-                    self.smoothed_velocity = (self.smoothed_velocity[0] * 0.7 + raw_vel[0] * 0.3, self.smoothed_velocity[1] * 0.7 + raw_vel[1] * 0.3)
+                
+                if prediction_enabled:
+                    # Update Kalman filter with current measurement
+                    current_pos = np.array([cx, cy])
+                    self.kalman_filter.update(current_pos)
                     
-                    # Calculate velocity magnitude
-                    velocity_mag = math.sqrt(self.smoothed_velocity[0]**2 + self.smoothed_velocity[1]**2)
+                    # Get velocity and confidence from Kalman filter
+                    velocity = self.kalman_filter.get_velocity()
+                    velocity_mag = np.linalg.norm(velocity)
+                    confidence = self.kalman_filter.get_prediction_confidence()
                     
-                    # Create velocity line with length based on velocity magnitude
-                    prediction_factor = self.predict_slider.value() / 100.0
-                    # Scale prediction distance based on velocity magnitude
-                    scaled_factor = prediction_factor * (1 + velocity_mag / 10.0)  # Longer lines for faster movement
-                    predicted_x = cx + self.smoothed_velocity[0] * scaled_factor
-                    predicted_y = cy + self.smoothed_velocity[1] * scaled_factor
-                    predicted_x = max(0, min(predicted_x, 2 * fov))
-                    predicted_y = max(0, min(predicted_y, 2 * fov))
-                    predicted_screen_pos = QPoint(int(fov_mon["left"] + predicted_x), int(fov_mon["top"] + predicted_y))
+                    # Initialize scaled_factor
+                    scaled_factor = 0.0
+                    
+                    # Only predict if we have sufficient confidence and velocity
+                    if confidence > 0.1 and velocity_mag > 1.0:  # More reasonable thresholds
+                        # Calculate prediction factor (more reasonable scaling)
+                        prediction_factor = self.predict_slider.value() / 10.0  # 0.1 to 5.0 (reasonable)
+                        scaled_factor = prediction_factor * confidence
+                        
+                        # Apply velocity smoothing for more stable predictions
+                        if hasattr(self, 'smoothed_velocity'):
+                            self.smoothed_velocity = self.smoothed_velocity * 0.7 + velocity * 0.3
+                        else:
+                            self.smoothed_velocity = velocity.copy()
+                        
+                        # For 3D FPS games, we need to be more careful about prediction direction
+                        # Only predict if the velocity is in a clear direction
+                        velocity_direction = velocity / (velocity_mag + 1e-6)  # Normalize velocity
+                        smoothed_direction = self.smoothed_velocity / (np.linalg.norm(self.smoothed_velocity) + 1e-6)
+                        
+                        # Check if velocity direction is consistent
+                        direction_similarity = np.dot(velocity_direction, smoothed_direction)
+                        
+                        if direction_similarity > 0.5:  # Only predict if direction is consistent
+                            predicted_pos = current_pos + self.smoothed_velocity * scaled_factor
+                        else:
+                            # If direction is inconsistent, use current velocity directly
+                            predicted_pos = current_pos + velocity * scaled_factor
+                        
+
+                    elif velocity_mag > 1.0 and self.last_target_pos:
+                        # Fallback: simple velocity-based prediction when Kalman is uncertain
+                        last_pos = np.array(self.last_target_pos)
+                        simple_velocity = current_pos - last_pos
+                        simple_factor = self.predict_slider.value() / 20.0  # More reasonable fallback
+                        scaled_factor = simple_factor  # Use simple factor for fallback
+                        predicted_pos = current_pos + simple_velocity * simple_factor
+                    else:
+                        predicted_pos = current_pos  # No prediction if uncertain
+                    
+                    # Clamp predicted position to FOV bounds
+                    predicted_pos = np.clip(predicted_pos, 0, 2 * fov)
+                    
+                    # Convert to screen coordinates
+                    predicted_screen_pos = QPoint(
+                        int(fov_mon["left"] + predicted_pos[0]),
+                        int(fov_mon["top"] + predicted_pos[1])
+                    )
                     
                     velocity_lines.append((current_screen_pos, predicted_screen_pos, velocity_mag))
                     
-                    # Use predicted position for aiming
-                    aim_x, aim_y = predicted_x, predicted_y
+                    # Use predicted position for aiming with smoothness
+                    # Blend between current position and predicted position for smooth aiming
+                    prediction_blend = min(0.5, scaled_factor * 0.05)  # Limit prediction influence
+                    
+                    # Apply prediction smoothing to work with main aiming
+                    if hasattr(self, 'last_aim_pos'):
+                        # Smooth the aim position to prevent jitter
+                        aim_x = self.last_aim_pos[0] * 0.8 + (cx * (1 - prediction_blend) + predicted_pos[0] * prediction_blend) * 0.2
+                        aim_y = self.last_aim_pos[1] * 0.8 + (cy * (1 - prediction_blend) + predicted_pos[1] * prediction_blend) * 0.2
+                    else:
+                        aim_x = cx * (1 - prediction_blend) + predicted_pos[0] * prediction_blend
+                        aim_y = cy * (1 - prediction_blend) + predicted_pos[1] * prediction_blend
+                    
+                    # Store current aim position for next frame
+                    self.last_aim_pos = (aim_x, aim_y)
+                    
+                    # Update arraylist to show prediction is active
+                    if velocity_mag > 1.0:
+                        self.array_list.update_hack_display_name('prediction', f"Prediction [{prediction_blend:.2f}]")
+                    else:
+                        self.array_list.update_hack_display_name('prediction', "Prediction")
                 else:
+                    # Skip all prediction calculations when disabled
                     aim_x, aim_y = cx, cy
+                    # Clear smoothed velocity when prediction is disabled
+                    if hasattr(self, 'smoothed_velocity'):
+                        delattr(self, 'smoothed_velocity')
+                    # Clear aim smoothing when prediction is disabled
+                    if hasattr(self, 'last_aim_pos'):
+                        delattr(self, 'last_aim_pos')
                     
                 self.last_target_pos = (cx, cy)
 
@@ -2127,25 +2233,30 @@ class MainWindow(QWidget):
 
     def open_detection_color_dialog(self):
         c = QColorDialog.getColor(self.detection_color, self)
-        if c.isValid(): self.det_color_button.setStyleSheet(f"background-color:{c.name()};border-radius:5px;"); self.detection_color = c
+        if c.isValid(): 
+            self.style_color_button(self.det_color_button, c)
+            self.detection_color = c
 
     def open_prediction_color_dialog(self, color=None):
-        if color is None: color = QColorDialog.getColor(self.prediction_color, self)
-        if color.isValid():
+        if color is None:
+            color = QColorDialog.getColor(self.prediction_color, self)
+        if isinstance(color, QColor) and color.isValid():
             self.prediction_color = color
-            self.pred_color_button.setStyleSheet(f"background-color:{color.name()};border-radius:5px;")
+            self.style_color_button(self.pred_color_button, color)
             self.prediction_aim_overlay.set_color(color)
 
     def open_esp_color_dialog(self):
         c = QColorDialog.getColor(self.esp_color, self)
         if c.isValid():
-            self.esp_color = c; self.esp_color_button.setStyleSheet(f"background-color:{c.name()};border-radius:5px;")
+            self.esp_color = c
+            self.style_color_button(self.esp_color_button, c)
             self.fov_overlay.set_color(c); self.render_overlay.color = c
 
     def open_arraylist_color_dialog(self):
         c = QColorDialog.getColor(self.array_list_color, self)
         if c.isValid():
-            self.array_list_color = c; self.arraylist_color_button.setStyleSheet(f"background-color:{c.name()};border-radius:5px;")
+            self.array_list_color = c
+            self.style_color_button(self.arraylist_color_button, c)
             self.array_list.set_text_color(c)
             
     def open_theme_color_dialog(self):
@@ -2169,7 +2280,7 @@ class MainWindow(QWidget):
         border_color = "#2C2C2C" if is_dark else "#DCDCDC"
         
         self.setStyleSheet(f"background:{bg};")
-        self.theme_color_button.setStyleSheet(f"background-color:{self.theme_color.name()}; border-radius: 5px;")
+        self.style_color_button(self.theme_color_button, self.theme_color)
         
         self.nav.update_theme(sidebar_bg, selection_bg, self.theme_color)
 
@@ -2184,7 +2295,7 @@ class MainWindow(QWidget):
                 controls[0].theme_color = self.theme_color
                 controls[1].setStyleSheet(f"color:{text_color};")
             elif widget_type == 'slider':
-                controls[0].setStyleSheet(f"QSlider::groove:horizontal{{height:6px;background:#333;border-radius:3px}}QSlider::handle:horizontal{{width:12px;background:{self.theme_color.name()};margin:-4px 0;border-radius:6px}}")
+                self.style_slider(controls[0])
                 controls[1].setStyleSheet(f"color:{text_color};")
                 controls[2].setStyleSheet(f"color:{text_color};")
             elif widget_type in ['picker', 'dropdown']:
@@ -2194,8 +2305,6 @@ class MainWindow(QWidget):
     
     def closeEvent(self, e):
         logging.info("Closing...")
-        # Save current config before closing
-        self.save_current_config()
         self.input_listener.stop()
         self.scan_timer.stop()
         for w in [self.array_list, self.render_overlay, self.fov_overlay, self.radar_widget, self.prediction_aim_overlay]: 
