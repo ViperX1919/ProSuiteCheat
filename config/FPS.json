@@ -1,0 +1,60 @@
+{
+    "fov": 247,
+    "detection_color": "#ff00ff",
+    "prediction_color": "#00ffff",
+    "tolerance": 56,
+    "smoothness": 90,
+    "speed": 100,
+    "priority": "Proximity",
+    "aim_pos": "Body",
+    "y_offset": 0,
+    "prediction_factor": 10,
+    "esp_color": "#55ffff",
+    "opacity": 100,
+    "esp_mode": "Box",
+    "arraylist_enabled": false,
+    "arraylist_color": 4287107362,
+    "arraylist_size": 14,
+    "arraylist_pos": [
+        903,
+        507
+    ],
+    "arraylist_style": "Default",
+    "radar_pos": [
+        1600,
+        573
+    ],
+    "radar_color": "#55ffff",
+    "ui_theme_color": "#881122",
+    "ui_theme": "Dark",
+    "window_pos": [
+        30,
+        190
+    ],
+    "window_size": [
+        1000,
+        808
+    ],
+    "toggles": {
+        "aim": true,
+        "prediction": false,
+        "prediction_visual": false,
+        "triggerbot": false,
+        "esp": true,
+        "glow": true,
+        "tracers": true,
+        "radar": true,
+        "show_fov": true,
+        "arraylist": false
+    },
+    "keybinds": {
+        "aim": "RIGHT CLICK"
+    },
+    "sections_collapsed": {
+        "EnableSmoothAim": false,
+        "EnableESP": false,
+        "EnableRadar": false,
+        "ShowFOV": false,
+        "EnableArraylist": true
+    }
+}
