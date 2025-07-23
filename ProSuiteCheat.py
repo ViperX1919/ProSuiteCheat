@@ -309,173 +309,6 @@ class InputListener(QtCore.QObject, threading.Thread):
             self.mouse_listener.stop()
 
 # --- GUI Classes ---
-class ArrayListWidget(QWidget):
-    def __init__(self, main_window):
-        super().__init__()
-        self.main_window = main_window
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)  # type: ignore
-        
-        # --- FIX ---
-        # These attributes are essential for creating a transparent overlay
-        # that can still have styled, semi-transparent children.
-        self.setAttribute(Qt.WA_TranslucentBackground, True)  # type: ignore
-        self.setAttribute(Qt.WA_StyledBackground, True)  # type: ignore
-        
-        self.setAttribute(Qt.WA_ShowWithoutActivating)  # type: ignore
-        
-        self._layout = QVBoxLayout(self)
-        # make the widget trim to its contents
-        self._layout.setSizeConstraint(QLayout.SetFixedSize)  # type: ignore
-        self._layout.setContentsMargins(5, 5, 5, 5)
-        self._layout.setSpacing(5)
-        self._layout.setAlignment(Qt.AlignTop | Qt.AlignRight)  # type: ignore
-        
-        # --- FIX ---
-        # The container itself is transparent. Visibility is determined by the
-        # child labels (styled in _apply_style) or the move mode overlay.
-        self.setStyleSheet("background-color: transparent; border: none;")
-
-        self.hacks = {}
-        self.animations = {}
-        self._font_size = 14
-        self._color = QColor(NEW_RED)
-        self._style = "Default"
-        
-        self.is_dragging = False
-        self.is_move_mode = False
-        self.drag_position = QPoint()
-
-    def showEvent(self, event):
-        super().showEvent(event)
-        # Ensure the essential flags are set when showing
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)  # type: ignore
-        self.setAttribute(Qt.WA_TranslucentBackground, True)  # type: ignore
-        self.setAttribute(Qt.WA_StyledBackground, True)  # type: ignore
-        self.setAttribute(Qt.WA_ShowWithoutActivating)  # type: ignore
-        # Set initial position in the top-right corner if not already positioned
-        if self.pos() == QPoint(0, 0):
-            # Get current screen geometry dynamically
-            geom = QtGui.QGuiApplication.primaryScreen().geometry()
-            margin = 50
-            self.move(geom.width() - self.width() - margin, margin)
-
-    def toggle_move_mode(self):
-        self.is_move_mode = not self.is_move_mode
-        # When moving, make the widget sensitive to mouse events
-        self.setWindowFlag(Qt.WindowTransparentForInput, not self.is_move_mode)  # type: ignore
-        # Ensure the essential flags are preserved
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)  # type: ignore
-        self.setAttribute(Qt.WA_TranslucentBackground, True)  # type: ignore
-        self.setAttribute(Qt.WA_StyledBackground, True)  # type: ignore
-        self.setAttribute(Qt.WA_ShowWithoutActivating)  # type: ignore
-        self.show()
-        if self.is_move_mode:
-            # Apply a visible border for dragging
-            self.setStyleSheet(f"background-color: rgba(30, 30, 30, 0.5); border: 2px dashed {self.main_window.theme_color.name()};")
-        else:
-            # Restore the transparent container style
-            self.setStyleSheet("background-color: transparent; border: none;")
-        return self.is_move_mode
-
-    def mousePressEvent(self, event):
-        if self.is_move_mode and event.button() == Qt.LeftButton:
-            self.is_dragging = True
-            self.drag_position = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
-            event.accept()
-        else:
-            super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event):
-        if self.is_dragging and self.is_move_mode and event.buttons() & Qt.LeftButton:
-            self.move(event.globalPosition().toPoint() - self.drag_position)
-            event.accept()
-        else:
-            super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            self.is_dragging = False
-            event.accept()
-        else:
-            super().mouseReleaseEvent(event)
-            
-    def keyPressEvent(self, event):
-        if event.key() == Qt.Key_Escape and self.is_move_mode:
-            self.main_window.toggle_arraylist_move_mode()
-            event.accept()
-
-    def _apply_style(self, label):
-        """Applies the selected visual style to a feature label."""
-        base_style = f"color: {self._color.name()}; font-size: {self._font_size}pt;"
-        padding = "padding: 4px 8px;"
-        
-        if self._style == "Classic":
-            label.setStyleSheet(f"{base_style} {padding} background-color: rgba(0, 0, 0, 0.6); border-radius: 4px;")
-        elif self._style == "Edged":
-            label.setStyleSheet(f"{base_style} {padding} background-color: rgba(0, 0, 0, 0.6); border-radius: 4px; border-left: 3px solid {self.main_window.theme_color.name()};")
-        else: # Default style
-            label.setStyleSheet(f"{base_style} background-color: transparent;")
-
-    def toggle_hack(self, name, state, display_name):
-        if state and name not in self.hacks:
-            label = QLabel(display_name, self)
-            self._apply_style(label)
-            self.hacks[name] = {"label": label, "display_name": display_name}
-            self._layout.addWidget(label)
-            self.adjustSize()
-            
-            # Animate entrance
-            anim = QPropertyAnimation(label, b"maximumHeight")
-            anim.setDuration(250)
-            anim.setStartValue(0)
-            anim.setEndValue(label.sizeHint().height())
-            anim.setEasingCurve(QEasingCurve.InOutCubic)
-            anim.start(QPropertyAnimation.DeleteWhenStopped)
-            
-        elif not state and name in self.hacks:
-            label = self.hacks[name]["label"]
-            
-            # Animate exit
-            anim = QPropertyAnimation(label, b"maximumHeight")
-            anim.setDuration(250)
-            anim.setStartValue(label.height())
-            anim.setEndValue(0)
-            anim.setEasingCurve(QEasingCurve.InOutCubic)
-            # Schedule the widget for deletion after the animation
-            anim.finished.connect(lambda n=name: self._remove_widget(n))
-            anim.start(QPropertyAnimation.DeleteWhenStopped)
-            # after the animation fires _remove_widget, resize again
-            anim.finished.connect(self.adjustSize)
-
-    def _remove_widget(self, name):
-        if name in self.hacks:
-            data = self.hacks.pop(name, None)
-            if data and data.get("label"):
-                data["label"].deleteLater()
-            
-    def _update_all_styles(self):
-        for data in self.hacks.values():
-            if data.get("label"):
-                self._apply_style(data["label"])
-                data["label"].adjustSize()
-
-    def set_text_color(self, color):
-        self._color = color
-        self._update_all_styles()
-
-    def set_font_size(self, size):
-        self._font_size = size
-        self._update_all_styles()
-
-    def set_style(self, style_name):
-        self._style = style_name
-        self._update_all_styles()
-        
-    def update_hack_display_name(self, name, new_display_name):
-        if name in self.hacks and self.hacks[name].get("label"):
-            self.hacks[name]["display_name"] = new_display_name
-            self.hacks[name]["label"].setText(new_display_name)
-
 class FOVOverlay(QtWidgets.QWidget):
     def __init__(self, color=QtGui.QColor(NEW_RED)):
         super().__init__()
@@ -1619,7 +1452,7 @@ class MainWindow(QWidget):
 
         for name, widgets in self.hack_widgets.items():
             if 'toggle' in widgets and 'display_name' in widgets:
-                 widgets['toggle'].toggled.connect(lambda state, n=name, dn=widgets['display_name']: self.array_list.toggle_hack(n, state, dn))
+                widgets['toggle'].toggled.connect(lambda state, n=name, dn=widgets['display_name']: self.on_arraylist_feature_toggled(n, state, dn))
             if 'keybind_button' in widgets:
                 widgets['keybind_button'].clicked.connect(lambda checked=False, n=name: self.input_listener.set_new_bind(n))
         
@@ -1647,8 +1480,8 @@ class MainWindow(QWidget):
         self.arraylist_toggle.toggled.connect(self.on_arraylist_toggled)
         self.arraylist_color_button.clicked.connect(self.open_arraylist_color_dialog)
         self.arraylist_size_slider.valueChanged.connect(self.array_list.set_font_size)
-        self.arraylist_reposition_button.clicked.connect(self.toggle_arraylist_move_mode)
         self.arraylist_style_dropdown.currentTextChanged.connect(self.array_list.set_style)
+        self.arraylist_reposition_button.clicked.connect(self.toggle_arraylist_move_mode)
         
         self.theme_color_button.clicked.connect(self.open_theme_color_dialog)
         self.theme_select_dropdown.currentTextChanged.connect(self.update_ui_theme)
@@ -1676,6 +1509,12 @@ class MainWindow(QWidget):
     def toggle_radar_move_mode(self):
         is_moving = self.radar_widget.toggle_move_mode()
         self.radar_reposition_button.setText("Stop Repositioning" if is_moving else "Reposition Radar")
+
+    def on_arraylist_feature_toggled(self, name, state, display_name):
+        if state:
+            self.array_list.add_feature(name, display_name)
+        else:
+            self.array_list.remove_feature(name)
 
     def on_arraylist_toggled(self, checked):
         if checked:
@@ -2033,16 +1872,18 @@ class MainWindow(QWidget):
             target_mask = cv2.inRange(img_hsv, l_target, u_target)
             
             if is_trigger_on:
-                # Get FOV center coordinates in the captured image
-                fov_center_x, fov_center_y = self.get_fov_center()
-                # Create a small region around the crosshair (center of FOV)
-                crosshair_size = 4  # 4x4 pixel region around crosshair
-                start_x = max(0, fov_center_x - crosshair_size//2)
-                end_x = min(2 * fov, fov_center_x + crosshair_size//2)
-                start_y = max(0, fov_center_y - crosshair_size//2)
-                end_y = min(2 * fov, fov_center_y + crosshair_size//2)
-                crosshair_region = target_mask[start_y:end_y, start_x:end_x]
-                if np.any(crosshair_region): self.smoother.click()
+                # Only trigger if aim key is held
+                if is_aim_pressed:
+                    # Get FOV center coordinates in the captured image
+                    fov_center_x, fov_center_y = self.get_fov_center()
+                    # Create a small region around the crosshair (center of FOV)
+                    crosshair_size = 4  # 4x4 pixel region around crosshair
+                    start_x = max(0, fov_center_x - crosshair_size//2)
+                    end_x = min(2 * fov, fov_center_x + crosshair_size//2)
+                    start_y = max(0, fov_center_y - crosshair_size//2)
+                    end_y = min(2 * fov, fov_center_y + crosshair_size//2)
+                    crosshair_region = target_mask[start_y:end_y, start_x:end_x]
+                    if np.any(crosshair_region): self.smoother.click()
 
             contours, _ = cv2.findContours(target_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             valid_contours = [c for c in contours if cv2.contourArea(c) > 10]
@@ -2192,9 +2033,9 @@ class MainWindow(QWidget):
                     
                     # Update arraylist to show prediction is active
                     if velocity_mag > 1.0:
-                        self.array_list.update_hack_display_name('prediction', f"Prediction [{prediction_blend:.2f}]")
+                        self.array_list.update_feature('prediction', f"Prediction [{prediction_blend:.2f}]")
                     else:
-                        self.array_list.update_hack_display_name('prediction', "Prediction")
+                        self.array_list.update_feature('prediction', "Prediction")
                 else:
                     # Skip all prediction calculations when disabled
                     aim_x, aim_y = cx, cy
@@ -2310,6 +2151,237 @@ class MainWindow(QWidget):
         for w in [self.array_list, self.render_overlay, self.fov_overlay, self.radar_widget, self.prediction_aim_overlay]: 
             w.close()
         e.accept()
+
+# --- GUI Classes ---
+class ArrayListWidget(QtWidgets.QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+        self.setStyleSheet("background: transparent;")
+        self.layout = QVBoxLayout(self)
+        self.layout.setContentsMargins(8, 8, 8, 8)
+        self.layout.setSpacing(6)
+        self.layout.setAlignment(Qt.AlignTop)
+        self.features = {}  # name: QLabel
+        self._font_size = 14
+        self._color = QColor(NEW_RED)
+        self._style = "Default"
+        self.is_move_mode = False
+        self.is_dragging = False
+        self.drag_position = QPoint()
+        self._has_positioned = False
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not self._has_positioned:
+            screen = QtGui.QGuiApplication.primaryScreen().geometry()
+            margin = 40
+            self.move(screen.width() - self.sizeHint().width() - margin, margin)
+            self._has_positioned = True
+
+    def sizeHint(self):
+        # Calculate width based on the widest label (visual width, not letter count)
+        min_width = 100
+        max_width = 0
+        font = self.font()
+        font.setPointSize(self._font_size)
+        metrics = QtGui.QFontMetrics(font)
+        for label in self.features.values():
+            width = metrics.horizontalAdvance(label.text())
+            max_width = max(max_width, width)
+        # Add padding for margins and style
+        total_width = max(max_width + 32, min_width)
+        return QtCore.QSize(total_width, self.layout.sizeHint().height())
+
+    def add_feature(self, name, display_name):
+        if name in self.features:
+            self.update_feature(name, display_name)
+            return
+        label = QLabel(display_name, self)
+        self._apply_style(label)
+        label.setGraphicsEffect(None)
+        label.setVisible(True)
+        label.setAttribute(Qt.WA_TranslucentBackground, True)
+        label.setAttribute(Qt.WA_ShowWithoutActivating, True)
+        label.setFixedHeight(label.sizeHint().height())
+        label.setFixedWidth(max(self.sizeHint().width() - 16, 80))
+        self.layout.insertWidget(len(self.features), label)
+        self.features[name] = label
+        self.adjustSize()
+        try:
+            self._animate_slide_in(label)
+        except Exception as e:
+            label.move(self.layout.contentsMargins().left(), label.pos().y())
+            label.setWindowOpacity(1.0)
+        self._update_positions_animated()
+
+    def remove_feature(self, name):
+        label = self.features.pop(name, None)
+        if label:
+            self._animate_slide_out(label, lambda: self._finalize_remove(label))
+            self._update_positions_animated()
+
+    def _finalize_remove(self, label):
+        self.layout.removeWidget(label)
+        label.deleteLater()
+        self.adjustSize()
+        self._update_positions_animated()
+
+    def _animate_slide_in(self, label):
+        # Start label off to the right and transparent
+        end_pos = label.pos()
+        start_x = max(self.width(), 0)
+        start_pos = QtCore.QPoint(start_x, end_pos.y())
+        label.move(start_pos)
+        label.setWindowOpacity(0.0)
+        anim_pos = QtCore.QPropertyAnimation(label, b"pos")
+        anim_pos.setStartValue(start_pos)
+        anim_pos.setEndValue(end_pos)
+        anim_pos.setDuration(250)
+        anim_pos.setEasingCurve(QtCore.QEasingCurve.OutCubic)
+        anim_opacity = QtCore.QPropertyAnimation(label, b"windowOpacity")
+        anim_opacity.setStartValue(0.0)
+        anim_opacity.setEndValue(1.0)
+        anim_opacity.setDuration(250)
+        group = QtCore.QParallelAnimationGroup()
+        group.addAnimation(anim_pos)
+        group.addAnimation(anim_opacity)
+        group.start(QtCore.QAbstractAnimation.DeleteWhenStopped)
+
+    def _animate_slide_out(self, label, on_finished):
+        start_pos = label.pos()
+        end_x = max(self.width(), 0)
+        end_pos = QtCore.QPoint(end_x, start_pos.y())
+        anim_pos = QtCore.QPropertyAnimation(label, b"pos")
+        anim_pos.setStartValue(start_pos)
+        anim_pos.setEndValue(end_pos)
+        anim_pos.setDuration(250)
+        anim_pos.setEasingCurve(QtCore.QEasingCurve.InCubic)
+        anim_opacity = QtCore.QPropertyAnimation(label, b"windowOpacity")
+        anim_opacity.setStartValue(1.0)
+        anim_opacity.setEndValue(0.0)
+        anim_opacity.setDuration(250)
+        group = QtCore.QParallelAnimationGroup()
+        group.addAnimation(anim_pos)
+        group.addAnimation(anim_opacity)
+        group.finished.connect(on_finished)
+        group.start(QtCore.QAbstractAnimation.DeleteWhenStopped)
+
+    def _update_positions_animated(self):
+        # Animate all labels to their new positions (slide down/up)
+        y = self.layout.contentsMargins().top()
+        anim_group = QtCore.QParallelAnimationGroup()
+        for i in range(self.layout.count()):
+            item = self.layout.itemAt(i)
+            if not item:
+                continue
+            widget = item.widget()
+            if not widget:
+                continue
+            target_pos = QtCore.QPoint(self.layout.contentsMargins().left(), y)
+            anim = QtCore.QPropertyAnimation(widget, b"pos")
+            anim.setDuration(250)
+            anim.setEndValue(target_pos)
+            anim.setEasingCurve(QtCore.QEasingCurve.OutCubic)
+            anim_group.addAnimation(anim)
+            y += widget.height() + self.layout.spacing()
+        anim_group.start(QtCore.QAbstractAnimation.DeleteWhenStopped)
+
+    def _apply_style(self, label):
+        base = f"color: {self._color.name()}; font-size: {self._font_size}pt;"
+        if self._style == "Classic":
+            label.setStyleSheet(f"{base} background: rgba(0,0,0,0.6); border-radius: 4px; padding: 4px 10px;")
+        elif self._style == "Edged":
+            label.setStyleSheet(f"{base} background: rgba(0,0,0,0.6); border-radius: 4px; border-left: 3px solid {self._color.name()}; padding: 4px 10px;")
+        else:
+            label.setStyleSheet(f"{base} background: transparent; padding: 4px 10px;")
+
+    def toggle_move_mode(self):
+        self.is_move_mode = not self.is_move_mode
+        self.setWindowFlag(Qt.WindowTransparentForInput, not self.is_move_mode)
+        self.setStyleSheet(
+            "background: rgba(30,30,30,0.5); border: 2px dashed %s;" % self._color.name() if self.is_move_mode else "background: transparent; border: none;"
+        )
+        self.show()
+        return self.is_move_mode
+
+    def mousePressEvent(self, event):
+        if self.is_move_mode and event.button() == Qt.LeftButton:
+            self.is_dragging = True
+            self.drag_position = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            event.accept()
+        else:
+            super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self.is_dragging and self.is_move_mode and event.buttons() & Qt.LeftButton:
+            self.move(event.globalPosition().toPoint() - self.drag_position)
+            event.accept()
+        else:
+            super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.is_dragging = False
+            event.accept()
+        else:
+            super().mouseReleaseEvent(event)
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Escape and self.is_move_mode:
+            self.toggle_move_mode()
+            event.accept()
+        else:
+            super().keyPressEvent(event)
+
+    def update_feature(self, name, new_display_name):
+        label = self.features.get(name)
+        if label:
+            old_width = label.width()
+            label.setText(new_display_name)
+            self._apply_style(label)
+            label.adjustSize()
+            new_width = self.sizeHint().width() - 16
+            # Animate width change if needed
+            if old_width != new_width:
+                anim = QtCore.QPropertyAnimation(label, b"minimumWidth")
+                anim.setStartValue(old_width)
+                anim.setEndValue(new_width)
+                anim.setDuration(200)
+                anim.setEasingCurve(QtCore.QEasingCurve.OutCubic)
+                anim.start(QtCore.QAbstractAnimation.DeleteWhenStopped)
+            label.setFixedWidth(new_width)
+            self.adjustSize()
+            self._update_positions_animated()
+
+    def set_font_size(self, size):
+        self._font_size = size
+        for label in self.features.values():
+            self._apply_style(label)
+            label.adjustSize()
+            label.setFixedWidth(self.sizeHint().width() - 16)
+        self.adjustSize()
+        self._update_positions_animated()
+
+    def set_style(self, style_name):
+        self._style = style_name
+        for label in self.features.values():
+            self._apply_style(label)
+            label.adjustSize()
+            label.setFixedWidth(self.sizeHint().width() - 16)
+        self.adjustSize()
+        self._update_positions_animated()
+
+    def set_text_color(self, color):
+        self._color = color
+        for label in self.features.values():
+            self._apply_style(label)
+            label.adjustSize()
+            label.setFixedWidth(self.sizeHint().width() - 16)
+        self.adjustSize()
+        self._update_positions_animated()
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
