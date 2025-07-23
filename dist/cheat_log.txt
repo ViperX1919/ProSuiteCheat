@@ -1,0 +1,17 @@
+2025-07-23 18:31:29,688 - INFO - Detected screen resolution: 1920x1080
+2025-07-23 18:31:31,121 - INFO - Performance: Frame 1000, Prediction: False
+2025-07-23 18:31:32,421 - INFO - Performance: Frame 2000, Prediction: False
+2025-07-23 18:31:33,447 - INFO - Performance: Frame 3000, Prediction: False
+2025-07-23 18:31:34,572 - INFO - Performance: Frame 4000, Prediction: False
+2025-07-23 18:31:35,584 - INFO - Performance: Frame 5000, Prediction: False
+2025-07-23 18:31:36,700 - INFO - Performance: Frame 6000, Prediction: False
+2025-07-23 18:31:37,947 - INFO - Performance: Frame 7000, Prediction: False
+2025-07-23 18:31:38,969 - INFO - Performance: Frame 8000, Prediction: False
+2025-07-23 18:31:39,977 - INFO - Performance: Frame 9000, Prediction: False
+2025-07-23 18:31:40,991 - INFO - Performance: Frame 10000, Prediction: False
+2025-07-23 18:31:42,896 - INFO - Performance: Frame 11000, Prediction: False
+2025-07-23 18:31:44,359 - INFO - Performance: Frame 12000, Prediction: False
+2025-07-23 18:31:45,666 - INFO - Performance: Frame 13000, Prediction: False
+2025-07-23 18:31:46,619 - INFO - Bind UI updated for aim to RIGHT CLICK
+2025-07-23 18:31:46,660 - INFO - Settings loaded from C:/Users/kiran/OneDrive/Desktop/ProSuiteCheat/config/FPS.json
+2025-07-23 18:31:48,262 - INFO - Closing...
