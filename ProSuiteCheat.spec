@@ -3,7 +3,8 @@
 
 a = Analysis(
     ['ProSuiteCheat.py'],
-    pathex=[],
+    # The launcher imports the prosuite package from the project root.
+    pathex=['.'],
     binaries=[],
     datas=[('assets', 'assets')],
     hiddenimports=[],
