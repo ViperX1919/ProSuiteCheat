@@ -151,10 +151,14 @@ class AnimatedStackedWidget(QtWidgets.QStackedWidget):
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
-        self._group = QtCore.QParallelAnimationGroup(self)
-        self._group.finished.connect(self._settle)
         #: The page sliding out, kept visible for the duration of the slide.
         self._outgoing: QWidget | None = None
+        self._animations: list[QPropertyAnimation] = []
+        #: Bumped per transition. A settle carrying a stale token is ignored,
+        #: which is why this does not need an animation group - stopping a
+        #: group and clearing it mid-flight is what produced
+        #: "QAnimationGroup::animationAt: index is out of bounds".
+        self._token = 0
 
     def setCurrentIndex(self, index: int) -> None:
         if not 0 <= index < self.count() or index == self.currentIndex():
@@ -162,9 +166,8 @@ class AnimatedStackedWidget(QtWidgets.QStackedWidget):
 
         # A click landing mid-transition finishes the previous one instantly
         # rather than being swallowed, so the nav always feels responsive.
-        if self._group.state() == QtCore.QAbstractAnimation.Running:
-            self._group.stop()
-            self._settle()
+        if self._animations:
+            self._settle(self._token)
 
         outgoing = self.currentWidget()
         incoming = self.widget(index)
@@ -193,11 +196,15 @@ class AnimatedStackedWidget(QtWidgets.QStackedWidget):
             incoming.raise_()
 
         self._outgoing = outgoing
-        self._group.clear()
-        self._group.addAnimation(self._slide(incoming, QPoint(0, 0)))
+        self._animations = [self._slide(incoming, QPoint(0, 0))]
         if outgoing is not None:
-            self._group.addAnimation(self._slide(outgoing, QPoint(-offset, 0)))
-        self._group.start()
+            self._animations.append(self._slide(outgoing, QPoint(-offset, 0)))
+        for animation in self._animations:
+            animation.start()
+
+        self._token += 1
+        token = self._token
+        QtCore.QTimer.singleShot(self.DURATION + 20, lambda: self._settle(token))
 
     def _slide(self, page: QWidget, end: QPoint) -> QPropertyAnimation:
         animation = QPropertyAnimation(page, b"pos", self)
@@ -207,8 +214,16 @@ class AnimatedStackedWidget(QtWidgets.QStackedWidget):
         animation.setEndValue(end)
         return animation
 
-    def _settle(self) -> None:
+    def _settle(self, token: int | None = None) -> None:
         """Park the pages where the stacked layout expects to find them."""
+        if token is not None and token != self._token:
+            return
+
+        for animation in self._animations:
+            animation.stop()
+            animation.deleteLater()
+        self._animations.clear()
+
         if self._outgoing is not None:
             self._outgoing.hide()
             self._outgoing.move(0, 0)
@@ -225,10 +240,81 @@ class AnimatedStackedWidget(QtWidgets.QStackedWidget):
     def resizeEvent(self, event) -> None:
         # Mid-flight geometry is stale the moment the window resizes; snapping
         # to the end state is better than animating to the wrong place.
-        if self._group.state() == QtCore.QAbstractAnimation.Running:
-            self._group.stop()
-            self._settle()
+        if self._animations:
+            self._settle(self._token)
         super().resizeEvent(event)
+
+
+class AnimatedComboBox(QComboBox):
+    """Combo box whose popup fades out as well as in.
+
+    Windows animates the popup open but snaps it shut, so the two directions
+    do not match. Fading the close makes the dropdown feel like it belongs to
+    the same UI as the sections and page transitions.
+    """
+
+    DURATION = 110
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self._fade: QPropertyAnimation | None = None
+        #: Guards against Qt re-entering hidePopup while the fade is running.
+        self._closing = False
+        #: stop() emits finished(), so a fade cancelled by a re-open would
+        #: otherwise run its completion handler and hide the popup we just
+        #: opened. Stale tokens are ignored instead.
+        self._token = 0
+
+    def _popup_window(self) -> QWidget | None:
+        view = self.view()
+        return view.window() if view is not None else None
+
+    def showPopup(self) -> None:
+        self._closing = False
+        super().showPopup()
+        popup = self._popup_window()
+        if popup is None:
+            return
+        popup.setWindowOpacity(0.0)
+        self._animate(popup, 1.0, None)
+
+    def hidePopup(self) -> None:
+        popup = self._popup_window()
+        # Fall straight through if there is nothing to animate, so the popup
+        # can never be left stranded on screen.
+        if self._closing or popup is None or not popup.isVisible():
+            self._closing = False
+            super().hidePopup()
+            return
+        self._closing = True
+        self._animate(popup, 0.0, self._finish_hide)
+
+    def _animate(self, popup: QWidget, end: float, on_done) -> None:
+        self._token += 1
+        token = self._token
+
+        if self._fade is not None:
+            self._fade.stop()
+            self._fade.deleteLater()
+
+        self._fade = QPropertyAnimation(popup, b"windowOpacity", self)
+        self._fade.setDuration(self.DURATION)
+        self._fade.setEasingCurve(QEasingCurve.OutQuad)
+        self._fade.setStartValue(popup.windowOpacity())
+        self._fade.setEndValue(end)
+        if on_done is not None:
+            self._fade.finished.connect(
+                lambda: on_done() if token == self._token else None
+            )
+        self._fade.start()
+
+    def _finish_hide(self) -> None:
+        popup = self._popup_window()
+        self._closing = False
+        super().hidePopup()
+        if popup is not None:
+            # Reset, or the next open starts invisible.
+            popup.setWindowOpacity(1.0)
 
 
 # --- control factories ---
@@ -288,7 +374,7 @@ def make_color_picker(text: str, initial: str = "#FF0000") -> Control:
 def make_dropdown(text: str, items: Sequence[str]) -> Control:
     widget, layout = _row()
     label = QLabel(text)
-    combo = QComboBox()
+    combo = AnimatedComboBox()
     combo.addItems(list(items))
     layout.addWidget(label, 1)
     layout.addWidget(combo)

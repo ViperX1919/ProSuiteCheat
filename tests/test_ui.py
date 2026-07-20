@@ -160,6 +160,51 @@ check("a real section toggles", target.is_collapsed() != was)
 target.set_collapsed(was)
 pump(300)
 
+# --- combo popups must always end closed, whatever the fade is doing ---
+combo = win.esp_mode_dropdown
+check("dropdown is the animated subclass",
+      type(combo).__name__ == "AnimatedComboBox", type(combo).__name__)
+
+before = combo.currentText()
+combo.showPopup()
+pump(160)
+check("popup opens", combo.view().window().isVisible())
+combo.hidePopup()
+pump(combo.DURATION + 200)
+check("popup closes after the fade", not combo.view().window().isVisible())
+check("popup opacity is reset for next time",
+      combo.view().window().windowOpacity() == 1.0,
+      f"{combo.view().window().windowOpacity()}")
+
+# Open/close faster than the fade - the popup must never be stranded.
+for _ in range(5):
+    combo.showPopup()
+    pump(20)
+    combo.hidePopup()
+    pump(20)
+pump(combo.DURATION + 300)
+check("hammering the popup leaves it closed",
+      not combo.view().window().isVisible())
+
+# hidePopup with nothing open must be harmless.
+combo.hidePopup()
+pump(60)
+check("closing an already-closed popup is a no-op",
+      not combo.view().window().isVisible())
+check("selection is unaffected by the animation",
+      combo.currentText() == before, f"{combo.currentText()} vs {before}")
+
+# Selecting through the popup still applies.
+combo.showPopup()
+pump(140)
+other = combo.itemText((combo.currentIndex() + 1) % combo.count())
+combo.setCurrentText(other)
+combo.hidePopup()
+pump(combo.DURATION + 200)
+check("a selection made with the popup open sticks",
+      combo.currentText() == other, f"{combo.currentText()}")
+combo.setCurrentText(before)
+
 win.shutdown()
 print()
 print("FAILURES:", failures if failures else "none")
