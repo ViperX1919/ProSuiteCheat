@@ -14,6 +14,9 @@ from ..constants import (
 )
 from .widgets import AnimatedArrow, ToggleSwitch
 
+#: QWIDGETSIZE_MAX - what a maximumHeight of "no limit" actually is in Qt.
+_UNBOUNDED = 16777215
+
 
 class _SectionHeader(QWidget):
     """Clickable header strip.
@@ -76,6 +79,13 @@ class CollapsibleSection(QWidget):
         main_layout.addWidget(self.header_widget)
         main_layout.addWidget(self.content_widget)
 
+        self._content_animation = QPropertyAnimation(
+            self.content_widget, b"maximumHeight", self
+        )
+        self._content_animation.setDuration(200)
+        self._content_animation.setEasingCurve(QEasingCurve.InOutQuad)
+        self._content_animation.finished.connect(self._on_content_settled)
+
         self.content_widget.hide()
         self._collapsed = True
 
@@ -85,15 +95,53 @@ class CollapsibleSection(QWidget):
     def is_collapsed(self) -> bool:
         return self._collapsed
 
-    def set_collapsed(self, collapsed: bool) -> None:
+    def set_collapsed(self, collapsed: bool, animate: bool = True) -> None:
+        """Expand or collapse.
+
+        Args:
+            animate: False snaps straight to the end state. Restoring a saved
+                config sets every section at once, and animating all of them
+                on load looks like a glitch rather than a transition.
+        """
         if self._collapsed == collapsed:
             return
         self._collapsed = collapsed
 
+        self._arrow_animation.stop()
         self._arrow_animation.setEndValue(0 if collapsed else 90)
-        self.content_widget.setVisible(not collapsed)
-        self._arrow_animation.start()
+        self._content_animation.stop()
 
+        if not animate:
+            self.content_widget.setVisible(not collapsed)
+            self.content_widget.setMaximumHeight(0 if collapsed else _UNBOUNDED)
+            self.arrow.rotation = 0 if collapsed else 90
+            self._relayout_parent()
+            return
+
+        self._arrow_animation.start()
+        if collapsed:
+            self._content_animation.setStartValue(self.content_widget.height())
+            self._content_animation.setEndValue(0)
+        else:
+            # Height has to be measured while visible, and starting from zero
+            # keeps the first frame from flashing at full size.
+            self.content_widget.setMaximumHeight(0)
+            self.content_widget.show()
+            self._content_animation.setStartValue(0)
+            self._content_animation.setEndValue(
+                self.content_widget.sizeHint().height()
+            )
+        self._content_animation.start()
+
+    def _on_content_settled(self) -> None:
+        if self._collapsed:
+            self.content_widget.hide()
+        else:
+            # Release the cap so the section can still grow if its contents do.
+            self.content_widget.setMaximumHeight(_UNBOUNDED)
+        self._relayout_parent()
+
+    def _relayout_parent(self) -> None:
         parent = self.parentWidget()
         if parent is not None and parent.layout() is not None:
             QtCore.QTimer.singleShot(0, parent.layout().activate)

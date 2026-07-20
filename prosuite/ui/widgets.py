@@ -140,31 +140,95 @@ class ToggleSwitch(QWidget):
 
 
 class AnimatedStackedWidget(QtWidgets.QStackedWidget):
-    """Stacked widget whose pages slide in from the right."""
+    """Stacked widget whose pages slide in the direction of travel.
+
+    Both pages move: the outgoing one leaves as the incoming one arrives, so
+    the transition reads as a strip sliding sideways rather than a new page
+    appearing over a gap.
+    """
+
+    DURATION = 260
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
-        self._animation = QPropertyAnimation(self, b"pos", self)
-        self._animation.setDuration(300)
-        self._animation.setEasingCurve(QEasingCurve.InOutQuad)
+        self._group = QtCore.QParallelAnimationGroup(self)
+        self._group.finished.connect(self._settle)
+        #: The page sliding out, kept visible for the duration of the slide.
+        self._outgoing: QWidget | None = None
 
     def setCurrentIndex(self, index: int) -> None:
-        if (
-            self.currentIndex() == index
-            or self._animation.state() == QPropertyAnimation.Running
-        ):
+        if not 0 <= index < self.count() or index == self.currentIndex():
             return
 
+        # A click landing mid-transition finishes the previous one instantly
+        # rather than being swallowed, so the nav always feels responsive.
+        if self._group.state() == QtCore.QAbstractAnimation.Running:
+            self._group.stop()
+            self._settle()
+
+        outgoing = self.currentWidget()
         incoming = self.widget(index)
-        if incoming is self.currentWidget():
+        if incoming is None or incoming is outgoing:
             return
 
-        incoming.move(self.width(), 0)
+        # Travelling down the nav slides left, travelling up slides right.
+        offset = self.width() if index > self.currentIndex() else -self.width()
+
+        # This hides the outgoing page, so it has to be shown again below.
         super().setCurrentIndex(index)
-        self._animation.setTargetObject(incoming)
-        self._animation.setStartValue(incoming.pos())
-        self._animation.setEndValue(QPoint(0, 0))
-        self._animation.start()
+
+        # QStackedLayout re-applies the full rect to whichever page is current,
+        # which pins the incoming page at x=0 and eats the slide entirely.
+        # Suspending the layout for the duration is what makes it move at all.
+        layout = self.layout()
+        if layout is not None:
+            layout.setEnabled(False)
+
+        size = self.size()
+        incoming.setGeometry(offset, 0, size.width(), size.height())
+        if outgoing is not None:
+            outgoing.setGeometry(0, 0, size.width(), size.height())
+            outgoing.show()
+            outgoing.raise_()
+            incoming.raise_()
+
+        self._outgoing = outgoing
+        self._group.clear()
+        self._group.addAnimation(self._slide(incoming, QPoint(0, 0)))
+        if outgoing is not None:
+            self._group.addAnimation(self._slide(outgoing, QPoint(-offset, 0)))
+        self._group.start()
+
+    def _slide(self, page: QWidget, end: QPoint) -> QPropertyAnimation:
+        animation = QPropertyAnimation(page, b"pos", self)
+        animation.setDuration(self.DURATION)
+        animation.setEasingCurve(QEasingCurve.OutCubic)
+        animation.setStartValue(page.pos())
+        animation.setEndValue(end)
+        return animation
+
+    def _settle(self) -> None:
+        """Park the pages where the stacked layout expects to find them."""
+        if self._outgoing is not None:
+            self._outgoing.hide()
+            self._outgoing.move(0, 0)
+            self._outgoing = None
+        current = self.currentWidget()
+        if current is not None:
+            current.move(0, 0)
+
+        layout = self.layout()
+        if layout is not None and not layout.isEnabled():
+            layout.setEnabled(True)
+            layout.activate()
+
+    def resizeEvent(self, event) -> None:
+        # Mid-flight geometry is stale the moment the window resizes; snapping
+        # to the end state is better than animating to the wrong place.
+        if self._group.state() == QtCore.QAbstractAnimation.Running:
+            self._group.stop()
+            self._settle()
+        super().resizeEvent(event)
 
 
 # --- control factories ---

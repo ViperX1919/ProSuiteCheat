@@ -178,7 +178,10 @@ def _apply_features(window, data: dict[str, Any]) -> None:
 
     collapsed = data.get("sections_collapsed") or {}
     for section in window.sections:
-        section.set_collapsed(bool(collapsed.get(section.objectName(), True)))
+        # Snap rather than animate: every section changes at once here.
+        section.set_collapsed(
+            bool(collapsed.get(section.objectName(), True)), animate=False
+        )
 
 
 # --- dialogs ---
