@@ -40,6 +40,17 @@ class _OverlayBase(QtWidgets.QWidget):
     def screen_geometry() -> QRect:
         return QtGui.QGuiApplication.primaryScreen().geometry()
 
+    def show_overlay(self) -> None:
+        """Cover the screen without asking to be activated.
+
+        showFullScreen() calls activateWindow() internally, which Qt refuses
+        on a WindowDoesNotAcceptFocus window and warns about on every show.
+        Sizing to the screen achieves the same thing silently, and avoids
+        asking the compositor for a real fullscreen window.
+        """
+        self.setGeometry(self.screen_geometry())
+        self.show()
+
 
 class FOVOverlay(_OverlayBase):
     """Circle showing the region the detector samples."""
@@ -276,6 +287,13 @@ class RadarWidget(_OverlayBase):
     MAX_CONE_ANGLE = 170.0
     PLAYER_ARROW_SIZE = 15
     TARGET_DOT_RADIUS = 5
+    #: Radial band the dots occupy, as a fraction of the radar radius. The
+    #: inner bound keeps close contacts clear of the player arrow.
+    INNER_MARGIN = 0.12
+    OUTER_MARGIN = 0.94
+    #: Dot radius multiplier at the rim and at the centre.
+    MIN_DOT_SCALE = 0.6
+    MAX_DOT_SCALE = 1.5
 
     def __init__(self, radius: int = 150, esp_color: QColor | None = None):
         super().__init__()
@@ -366,23 +384,37 @@ class RadarWidget(_OverlayBase):
         )
 
     def _draw_targets(self, painter: QPainter) -> None:
-        painter.setBrush(self.esp_color)
         painter.setPen(Qt.NoPen)
         half_cone = self._cone_angle / 2
 
         for target in self.targets:
-            if abs(target.angle) > half_cone:
-                continue
-            # Bigger blobs read as closer, so they sit nearer the centre.
-            ratio = max(0.1, min(1.0 - (target.size / 100.0), 0.9))
-            angle = math.radians(target.angle)
+            # A bearing of +/-1 is the edge of the captured region, which is
+            # exactly the edge of the cone - so every target lands inside it
+            # at any FOV, and nothing needs to be culled.
+            angle = math.radians(target.bearing * half_cone)
+            # Keep the nearest dots off the player arrow, and the furthest
+            # just inside the rim.
+            ratio = self.INNER_MARGIN + target.distance * (
+                self.OUTER_MARGIN - self.INNER_MARGIN
+            )
+            # Near targets draw larger, which reads as depth alongside the
+            # radial position.
+            dot = self.TARGET_DOT_RADIUS * (
+                self.MIN_DOT_SCALE
+                + (1.0 - target.distance) * (self.MAX_DOT_SCALE - self.MIN_DOT_SCALE)
+            )
+
+            color = QColor(self.esp_color)
+            # Fade with distance so a distant contact is visibly weaker.
+            color.setAlpha(int(255 - 110 * target.distance))
+            painter.setBrush(color)
             painter.drawEllipse(
                 QPointF(
                     math.sin(angle) * self.radius * ratio,
                     -math.cos(angle) * self.radius * ratio,
                 ),
-                self.TARGET_DOT_RADIUS,
-                self.TARGET_DOT_RADIUS,
+                dot,
+                dot,
             )
 
     def _draw_player(self, painter: QPainter) -> None:

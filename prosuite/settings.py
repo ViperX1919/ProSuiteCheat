@@ -36,6 +36,7 @@ def collect(window) -> dict[str, Any]:
         "aim_pos": window.aim_position_dropdown.currentText(),
         "y_offset": window.y_offset_slider.value(),
         "prediction_factor": window.prediction_slider.value(),
+        "trigger_delay": window.trigger_delay_slider.value(),
         # ESP
         "esp_color": window.esp_color.name(),
         "opacity": window.opacity_slider.value(),
@@ -115,6 +116,7 @@ def _apply_sliders(window, data: dict[str, Any]) -> None:
         (window.speed_slider, "speed", 10),
         (window.y_offset_slider, "y_offset", 0),
         (window.prediction_slider, "prediction_factor", 5),
+        (window.trigger_delay_slider, "trigger_delay", 0),
         (window.opacity_slider, "opacity", 100),
         (window.arraylist_size_slider, "arraylist_size", 14),
     ):

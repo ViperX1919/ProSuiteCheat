@@ -313,12 +313,16 @@ class MainWindow(QWidget):
             )
         )
 
-        trigger_row = QWidget()
-        trigger_layout = QHBoxLayout(trigger_row)
-        trigger_layout.setContentsMargins(0, 0, 0, 0)
-        trigger_layout.addWidget(trigger_toggle.widget, 1)
-        trigger_layout.addWidget(trigger_key.widget)
-        page.add_widget(trigger_row)
+        trigger_section = CollapsibleSection(
+            trigger_toggle.widget, header_controls=[trigger_key.widget]
+        )
+        trigger_delay = self._register(
+            W.make_slider("Trigger Delay (ms)", 0, 500, 0)
+        )
+        self.trigger_delay_slider = trigger_delay.input
+        trigger_section.add_widget(trigger_delay.widget)
+        page.add_section(trigger_section)
+        self.sections.append(trigger_section)
 
         self.stack.addWidget(page)
 
@@ -385,9 +389,10 @@ class MainWindow(QWidget):
         page.add_separator()
 
         # --- FOV ---
-        fov_toggle = self._register(W.make_toggle("Show FOV", self.theme_color))
+        fov_toggle = self._register(W.make_toggle("Enable FOV", self.theme_color))
+        # The internal name stays "show_fov" - it is the key saved configs use.
         self._add_feature(
-            Feature(name="show_fov", display_name="Show FOV", toggle=fov_toggle.input)
+            Feature(name="show_fov", display_name="FOV", toggle=fov_toggle.input)
         )
         fov_section = CollapsibleSection(fov_toggle.widget)
         fov = self._register(W.make_slider("FOV Radius", MIN_FOV, 1000, 200))
@@ -524,7 +529,12 @@ class MainWindow(QWidget):
         self.arraylist_style_dropdown.currentTextChanged.connect(
             self.array_list.set_style
         )
-        self.arraylist_reposition_button.clicked.connect(self._toggle_arraylist_move)
+        self.arraylist_reposition_button.clicked.connect(
+            self.array_list.toggle_move_mode
+        )
+        # Driven by the signal rather than the click so the caption stays right
+        # when move mode is left with Escape.
+        self.array_list.move_mode_changed.connect(self._on_arraylist_move_mode)
 
         # Settings
         self.theme_color_button.clicked.connect(self._pick_theme_color)
@@ -541,6 +551,7 @@ class MainWindow(QWidget):
             self.speed_slider,
             self.y_offset_slider,
             self.prediction_slider,
+            self.trigger_delay_slider,
         ):
             slider.valueChanged.connect(self.push_settings)
         for dropdown in (
@@ -576,6 +587,7 @@ class MainWindow(QWidget):
             prediction_enabled=self.features["prediction"].is_on(),
             prediction_factor=self.prediction_slider.value(),
             trigger_enabled=self.features["triggerbot"].is_on(),
+            trigger_delay=self.trigger_delay_slider.value(),
             esp_enabled=self.features["esp"].is_on(),
             esp_mode=self.esp_mode_dropdown.currentText(),
             radar_enabled=self.features["radar"].is_on(),
@@ -596,7 +608,7 @@ class MainWindow(QWidget):
         )
         if show_prediction:
             if not self.prediction_overlay.isVisible():
-                self.prediction_overlay.showFullScreen()
+                self.prediction_overlay.show_overlay()
             self.prediction_overlay.show_lines(result.velocity_lines)
         elif self.prediction_overlay.isVisible():
             self.prediction_overlay.hide()
@@ -645,7 +657,7 @@ class MainWindow(QWidget):
     @staticmethod
     def _set_overlay_visible(overlay, visible: bool) -> None:
         if visible:
-            overlay.showFullScreen()
+            overlay.show_overlay()
         else:
             overlay.hide()
 
@@ -667,8 +679,7 @@ class MainWindow(QWidget):
             "Stop Repositioning" if moving else "Reposition Radar"
         )
 
-    def _toggle_arraylist_move(self) -> None:
-        moving = self.array_list.toggle_move_mode()
+    def _on_arraylist_move_mode(self, moving: bool) -> None:
         self.arraylist_reposition_button.setText(
             "Stop Repositioning" if moving else "Reposition Arraylist"
         )

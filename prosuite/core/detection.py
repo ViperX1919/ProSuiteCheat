@@ -9,6 +9,7 @@ through a queued signal.
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
 from dataclasses import dataclass, replace
@@ -33,6 +34,22 @@ TRIGGER_REGION = 4
 SATURATION_FLOOR = 100
 VALUE_FLOOR = 100
 
+# Radar distance is inferred from how large a target appears. These are the
+# apparent linear sizes, in screen pixels, that read as point-blank and as far
+# away; anything between is placed on a log scale, because apparent size falls
+# off with distance rather than linearly.
+RADAR_NEAR_PX = 100.0
+RADAR_FAR_PX = 5.0
+#: Most dots the radar will ever show, keeping the largest targets.
+RADAR_MAX_TARGETS = 5
+#: Apparent width below which a blob is noise rather than a contact.
+RADAR_MIN_SIZE_PX = 8.0
+#: Two dots closer than this in both bearing and distance are the same
+#: contact - usually one target whose blob broke into pieces - so only the
+#: larger of the pair gets drawn.
+RADAR_MERGE_BEARING = 0.12
+RADAR_MERGE_DISTANCE = 0.15
+
 
 @dataclass(frozen=True)
 class DetectionSettings:
@@ -55,6 +72,9 @@ class DetectionSettings:
     prediction_factor: int = 5
 
     trigger_enabled: bool = False
+    #: Minimum gap between triggerbot shots, in milliseconds. 0 fires as fast
+    #: as the capture loop allows, which is roughly 100 clicks a second.
+    trigger_delay: int = 0
     esp_enabled: bool = False
     esp_mode: str = "Box"
     radar_enabled: bool = False
@@ -75,9 +95,19 @@ class DetectionSettings:
 
 @dataclass(frozen=True)
 class RadarTarget:
+    """One blob's position on the radar, in FOV-independent terms.
+
+    The worker reports geometry the widget can place at any cone width, so
+    the dots stay lined up with the cone whatever the FOV slider is set to.
+    """
+
     id: int
-    angle: float
+    #: Horizontal offset from the crosshair as a fraction of the FOV:
+    #: -1 is the left edge of the captured region, +1 the right.
+    bearing: float
+    #: Radial position, 0 at the centre (close) to 1 at the rim (far).
     distance: float
+    #: Apparent linear size in screen pixels, used to scale the dot.
     size: float
 
 
@@ -121,6 +151,9 @@ class DetectionWorker(QtCore.QThread):
         self._last_target_pos: np.ndarray | None = None
         self._smoothed_velocity: np.ndarray | None = None
         self._last_aim_pos: tuple[float, float] | None = None
+
+        #: perf_counter timestamp of the last triggerbot click, for the delay.
+        self._last_trigger = float("-inf")
 
         # Cached HSV threshold, recomputed only when colour/tolerance change.
         self._hsv_cache_key: tuple[tuple[int, int, int], int] | None = None
@@ -228,12 +261,21 @@ class DetectionWorker(QtCore.QThread):
         return self._hsv_bounds
 
     def _maybe_trigger(self, mask: np.ndarray, cfg: DetectionSettings) -> None:
-        """Click if the target colour sits under the crosshair."""
+        """Click if the target colour sits under the crosshair.
+
+        Shots are spaced by at least ``cfg.trigger_delay`` milliseconds. The
+        gap is fixed, not randomised - this only limits the rate.
+        """
+        now = time.perf_counter()
+        if now - self._last_trigger < cfg.trigger_delay / 1000.0:
+            return
+
         centre = cfg.fov
         half = TRIGGER_REGION // 2
         patch = mask[centre - half : centre + half, centre - half : centre + half]
         if patch.any():
             self._aimer.click()
+            self._last_trigger = now
 
     # --- target selection ---
     def _find_targets(self, mask: np.ndarray) -> list[dict]:
@@ -318,28 +360,57 @@ class DetectionWorker(QtCore.QThread):
     def _build_radar(
         self, targets: list[dict], centroids: np.ndarray, cfg: DetectionSettings
     ) -> tuple[RadarTarget, ...]:
-        """Map targets inside the FOV circle onto radar bearings."""
-        fov = cfg.fov
-        offsets = centroids - np.array([fov, fov])
-        distances = np.linalg.norm(offsets, axis=1)
+        """Map every detected blob onto a radar bearing and distance.
 
-        out = []
+        Bearing is normalised against the FOV, and distance comes from how
+        large the target appears - a bigger blob is a nearer target.
+
+        The dial is a summary, not a dump: specks are ignored, dots that land
+        on top of each other are collapsed, and only the largest
+        ``RADAR_MAX_TARGETS`` survive. Without that, one target whose blob
+        breaks into pieces reads as a crowd.
+        """
+        fov = max(cfg.fov, 1)
+        # Horizontal displacement only; vertical position is irrelevant to a
+        # top-down radar.
+        offsets = centroids[:, 0] - fov
+        span = math.log(RADAR_NEAR_PX / RADAR_FAR_PX)
+
+        contacts = []
         for index, target in enumerate(targets):
-            distance = float(distances[index])
-            if distance > fov:
+            # Area is a squared quantity; its root is the apparent width, which
+            # is what actually scales with 1/distance.
+            size = math.sqrt(max(float(target["area"]), 1.0))
+            if size < RADAR_MIN_SIZE_PX:
                 continue
-            # Horizontal displacement only; vertical position is irrelevant to
-            # a top-down radar.
-            angle = max(-90.0, min(90.0, (offsets[index][0] / fov) * 90.0))
-            out.append(
+            ratio = math.log(RADAR_NEAR_PX / max(size, 1e-6)) / span
+            contacts.append(
                 RadarTarget(
                     id=index,
-                    angle=angle,
-                    distance=distance,
-                    size=min(target["area"] / 100.0, 50.0),
+                    bearing=float(np.clip(offsets[index] / fov, -1.0, 1.0)),
+                    distance=float(np.clip(ratio, 0.0, 1.0)),
+                    size=size,
                 )
             )
-        return tuple(out)
+
+        # Largest first, so a merged pair keeps the more substantial reading
+        # and the cap keeps the targets that matter.
+        contacts.sort(key=lambda t: -t.size)
+
+        merged: list[RadarTarget] = []
+        for contact in contacts:
+            if any(
+                abs(contact.bearing - kept.bearing) < RADAR_MERGE_BEARING
+                and abs(contact.distance - kept.distance) < RADAR_MERGE_DISTANCE
+                for kept in merged
+            ):
+                continue
+            merged.append(contact)
+            if len(merged) == RADAR_MAX_TARGETS:
+                break
+
+        # Renumber so ids stay contiguous for anything keying off them.
+        return tuple(replace(t, id=i) for i, t in enumerate(merged))
 
     def _emit_target(
         self,
