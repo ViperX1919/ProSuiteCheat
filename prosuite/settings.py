@@ -60,6 +60,8 @@ def collect(window) -> dict[str, Any]:
         "arraylist_style": window.arraylist_style_dropdown.currentText(),
         # Radar
         "radar_pos": [window.radar_widget.x(), window.radar_widget.y()],
+        # HUD
+        "hud_pos": [window.hud.x(), window.hud.y()],
         "radar_color": window.radar_widget.esp_color.name(),
         # Crosshair
         "crosshair_color": window.crosshair_overlay.color.name(),
@@ -195,6 +197,8 @@ def _apply_geometry(window, data: dict[str, Any]) -> None:
         window.array_list.move(*pos)
     if (pos := _point(data.get("radar_pos"))) is not None:
         window.radar_widget.move(*pos)
+    if (pos := _point(data.get("hud_pos"))) is not None:
+        window.hud.move(*pos)
     if (pos := _point(data.get("window_pos"))) is not None:
         window.move(*pos)
     if (size := _point(data.get("window_size"))) is not None:

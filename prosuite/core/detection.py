@@ -441,7 +441,7 @@ class DetectionWorker(QtCore.QThread):
         centroids = np.array([c["center"] for c in contours])
         radar = self._build_radar(contours, centroids, cfg) if cfg.radar_enabled else ()
 
-        if not (cfg.esp_enabled or cfg.aiming):
+        if not (cfg.esp_enabled or cfg.aiming or cfg.preview_enabled):
             self._emit(DetectionResult(radar_targets=radar))
             return
 

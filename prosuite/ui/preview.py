@@ -29,6 +29,8 @@ class MaskPreview(QWidget):
         self._rgba: np.ndarray | None = None  # kept alive for QImage
         self._image: QImage | None = None
         self._matched = 0.0  # fraction of pixels matching, for the readout
+        #: Locked target as fractions of the view (x0, y0, x1, y1), or None.
+        self._box: tuple[float, float, float, float] | None = None
 
         #: 0..1, eased toward 1 while something matches. Drives the border.
         self._lit = 0.0
@@ -40,6 +42,17 @@ class MaskPreview(QWidget):
     @property
     def lit(self) -> float:
         return self._lit
+
+    @property
+    def matched(self) -> float:
+        """Fraction of the last mask that matched, 0..1."""
+        return self._matched
+
+    def set_target(self, box: tuple[float, float, float, float] | None) -> None:
+        """Box the locked target, given as fractions of the view."""
+        if box != self._box:
+            self._box = box
+            self.update()
 
     def _on_fade(self, value) -> None:
         self._lit = float(value)
@@ -120,6 +133,22 @@ class MaskPreview(QWidget):
             c = target.center()
             painter.drawLine(QPointF(c.x() - 7, c.y()), QPointF(c.x() + 7, c.y()))
             painter.drawLine(QPointF(c.x(), c.y() - 7), QPointF(c.x(), c.y() + 7))
+
+            if self._box is not None:
+                x0, y0, x1, y1 = self._box
+                rect = QRectF(
+                    target.left() + x0 * target.width(),
+                    target.top() + y0 * target.height(),
+                    (x1 - x0) * target.width(),
+                    (y1 - y0) * target.height(),
+                )
+                line = QColor(self._text)
+                line.setAlphaF(0.35)
+                painter.setPen(QPen(line, 1, Qt.DashLine))
+                painter.drawLine(c, rect.center())
+                painter.setPen(QPen(QColor(self._text), 1.5))
+                painter.setBrush(Qt.NoBrush)
+                painter.drawRect(rect.adjusted(-2, -2, 2, 2))
 
             label = QColor(self._text)
             label.setAlphaF(0.7)

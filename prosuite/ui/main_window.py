@@ -33,7 +33,7 @@ from .arraylist import ArrayListWidget
 from .nav import IconNav
 from .picker import ScreenPicker
 from .session_panel import SessionPanel
-from .preview import MaskPreview
+from .hud import HudWindow
 from .overlays import (
     CrosshairOverlay,
     FOVOverlay,
@@ -132,8 +132,10 @@ class MainWindow(QWidget):
         self.session = SessionStats()
         self.prediction_overlay = PredictionAimOverlay(self.prediction_color)
         self.radar_widget = RadarWidget(esp_color=self.esp_color)
+        self.hud = HudWindow(self.theme_color)
         self.array_list = ArrayListWidget()
         self.radar_widget.hide()
+        self.hud.hide()
 
         # --- workers ---
         self.aimer = SmoothAimer(smoothness=50, speed=10)
@@ -427,17 +429,6 @@ class MainWindow(QWidget):
         page.add_section(trigger_section)
         self.sections.append(trigger_section)
 
-        page.add_separator()
-        preview_toggle = self._register(
-            W.make_toggle("Live Detection Preview", self.theme_color)
-        )
-        self._add_feature(Feature(name="preview", toggle=preview_toggle.input))
-        preview_section = CollapsibleSection(preview_toggle.widget)
-        self.mask_preview = MaskPreview()
-        preview_section.add_widget(self.mask_preview)
-        page.add_section(preview_section)
-        self.sections.append(preview_section)
-
         self.stack.addWidget(page)
 
     def _build_visuals_page(self) -> None:
@@ -500,6 +491,17 @@ class MainWindow(QWidget):
         radar_section.add_widget(self.radar_reposition_button)
         page.add_section(radar_section)
         self.sections.append(radar_section)
+        page.add_separator()
+
+        # --- HUD ---
+        # Feature key stays "preview": it is what saved configs already use.
+        hud_toggle = self._register(W.make_toggle("Enable HUD", self.theme_color))
+        self._add_feature(Feature(name="preview", toggle=hud_toggle.input))
+        hud_section = CollapsibleSection(hud_toggle.widget)
+        self.hud_reposition_button = QPushButton("Reposition HUD")
+        hud_section.add_widget(self.hud_reposition_button)
+        page.add_section(hud_section)
+        self.sections.append(hud_section)
         page.add_separator()
 
         # --- FOV ---
@@ -734,6 +736,10 @@ class MainWindow(QWidget):
         self.radar_color_button.clicked.connect(self._pick_radar_color)
         self.radar_reposition_button.clicked.connect(self._toggle_radar_move)
 
+        # HUD
+        self.features["preview"].toggle.toggled.connect(self._on_hud_toggled)
+        self.hud_reposition_button.clicked.connect(self._toggle_hud_move)
+
         # Arraylist
         self.arraylist_toggle.toggled.connect(self._on_arraylist_toggled)
         self.arraylist_color_button.clicked.connect(self._pick_arraylist_color)
@@ -837,7 +843,7 @@ class MainWindow(QWidget):
     def _own_rects(self) -> tuple[tuple[int, int, int, int], ...]:
         """Screen rectangles of our small windows (not the full-screen overlays)."""
         rects = []
-        for widget in (self, self.array_list, self.radar_widget):
+        for widget in (self, self.array_list, self.radar_widget, self.hud):
             if widget.isVisible() and not widget.isMinimized():
                 g = widget.frameGeometry()
                 rects.append((g.left(), g.top(), g.right(), g.bottom()))
@@ -943,9 +949,11 @@ class MainWindow(QWidget):
         self.status.set_stats(result.stats, self.features["prediction"].is_on())
         self._feed_session(result)
         if self.features["preview"].is_on():
-            self.mask_preview.set_mask(result.preview)
-        elif self.mask_preview.lit:
-            self.mask_preview.set_mask(None)
+            self.hud.update_from(
+                result,
+                self.fov_slider.value(),
+                (self.screen_center.x(), self.screen_center.y()),
+            )
 
         if self.features["esp"].is_on() and result.has_target:
             self.render_overlay.show_target(
@@ -1051,6 +1059,22 @@ class MainWindow(QWidget):
             "Stop Repositioning" if moving else "Reposition Radar"
         )
 
+    def _on_hud_toggled(self, on: bool) -> None:
+        if on:
+            self.hud.setVisible(True)
+            self.hud.raise_()
+        else:
+            if self.hud.move_mode:
+                self._toggle_hud_move()
+            self.hud.clear()
+            self.hud.hide()
+
+    def _toggle_hud_move(self) -> None:
+        moving = self.hud.toggle_move_mode()
+        self.hud_reposition_button.setText(
+            "Stop Repositioning" if moving else "Reposition HUD"
+        )
+
     def _on_arraylist_move_mode(self, moving: bool) -> None:
         self.arraylist_reposition_button.setText(
             "Stop Repositioning" if moving else "Reposition Arraylist"
@@ -1068,6 +1092,7 @@ class MainWindow(QWidget):
         self._set_overlay_visible(self.fov_overlay, self.features["show_fov"].is_on())
         self.array_list.setVisible(self.arraylist_toggle.isChecked())
         self.radar_widget.setVisible(self.features["radar"].is_on())
+        self.hud.setVisible(self.features["preview"].is_on())
         self.sync_radar_cone()
 
     # ------------------------------------------------------------------
@@ -1198,7 +1223,7 @@ class MainWindow(QWidget):
 
         self.array_list.set_text_color(self.arraylist_color)
         self.status.apply_theme(palette.content_box, palette.text, self.theme_color)
-        self.mask_preview.apply_theme(self.theme_color, palette.background, palette.text)
+        self.hud.apply_theme(self.theme_color, palette.background, palette.text)
         self.session_panel.apply_theme(palette.text, self.theme_color)
         self._panic_label.setStyleSheet(f"color:{palette.text};")
         self.accent_swatches.set_current(self.theme_color)
@@ -1233,6 +1258,7 @@ class MainWindow(QWidget):
             self.crosshair_overlay,
             self.toast,
             self.radar_widget,
+            self.hud,
             self.prediction_overlay,
         ):
             overlay.close()

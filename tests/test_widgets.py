@@ -61,7 +61,7 @@ pump(200)
 check("idle state labelled", win.status.state_label.text() == "IDLE")
 
 # --- mask preview ---
-prev = win.mask_preview
+prev = win.hud.view
 mask = np.zeros((90, 90), np.uint8); mask[30:50, 30:50] = 255
 prev.set_mask(mask)
 pump(400)
