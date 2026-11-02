@@ -146,7 +146,7 @@ def _apply_sliders(window, data: dict[str, Any]) -> None:
         (window.sat_floor_slider, "sat_floor", 100),
         (window.val_floor_slider, "val_floor", 100),
         (window.shade_slider, "shade_tolerance", 120),
-        (window.noise_slider, "noise_filter", 1),
+        (window.noise_slider, "noise_filter", 8),
         (window.shape_slider, "shape_filter", 10),
         (window.max_size_slider, "max_size", 50),
         (window.confirm_slider, "confirm_frames", 2),

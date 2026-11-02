@@ -465,7 +465,7 @@ def shape_text(value: int) -> str:
 
 
 def noise_text(value: int) -> str:
-    return "Off" if value <= 0 else f"{2 * value + 1} px"
+    return "Off" if value <= 1 else f"<{value} px"
 
 
 def tenths(value: int) -> str:

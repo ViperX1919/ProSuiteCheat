@@ -84,7 +84,7 @@ check("a hairline edge is not a target", len(detect(img)[0]) == 0)
 
 # --- thin outline targets: turning the filters down must keep them ---
 img = frame(); cv2.rectangle(img, (150, 150), (250, 250), RED, 1)
-check("1px outline box is lost with default filters", len(detect(img)[0]) == 0)
+check("1px outline box survives the default noise filter", len(detect(img)[0]) == 1)
 check("1px outline box survives with noise and shape filters off",
       len(detect(img, noise_filter=0, shape_filter=0)[0]) == 1)
 img = frame(); cv2.line(img, (20, 300), (380, 304), RED, 1)
@@ -100,12 +100,12 @@ for _ in range(250):
     x, y = rng.integers(0, SIZE, 2)
     img[y, x] = RED
 check("raw speckle would be found without the filter", len(detect(img, noise_filter=0)[0]) >= 0)
-check("speckle is erased by the noise filter", len(detect(img, noise_filter=1)[0]) == 0)
+check("speckle is erased by the noise filter", len(detect(img, noise_filter=8)[0]) == 0)
 img2 = frame(); disc(img2, 100, 100, 10)
 for _ in range(250):
     x, y = rng.integers(0, SIZE, 2)
     img2[y, x] = RED
-groups, _ = detect(img2, noise_filter=1)
+groups, _ = detect(img2, noise_filter=8)
 check("target survives while the speckle around it is erased",
       len(groups) == 1 and abs(groups[0]["center"][0] - 100) < 3, str(len(groups)))
 

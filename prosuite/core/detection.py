@@ -102,8 +102,9 @@ class DetectionSettings:
     #: colour's own, 0-255. Hue alone also matches a wall of the same colour
     #: in another shade; 255 turns the check off.
     shade_tolerance: int = 120
-    #: Radius in pixels of the morphological open that removes speckle.
-    noise_filter: int = 1
+    #: Isolated clumps of fewer than this many pixels are erased as speckle.
+    #: Size, not thickness, so a long 1px outline is never touched. 0 = off.
+    noise_filter: int = 8
     #: Strength 0-10 of the shape checks (thin, stripe-like or hollow blobs
     #: are dropped). 0 turns them off, which thin outline targets need.
     shape_filter: int = 10
@@ -593,13 +594,20 @@ class DetectionWorker(QtCore.QThread):
     # --- target selection ---
     @staticmethod
     def _clean_mask(mask: np.ndarray, cfg: DetectionSettings) -> np.ndarray:
-        """Open the mask: erase speckle and hairline edges, keep solid blobs."""
-        radius = cfg.noise_filter
-        if radius <= 0:
+        """Erase connected clumps smaller than ``noise_filter`` pixels.
+
+        Unlike a morphological open this never thins anything: a 1px outline
+        has many pixels so it stays whole, while isolated sparkle goes.
+        """
+        minimum = cfg.noise_filter
+        if minimum <= 1:
             return mask
-        size = 2 * radius + 1
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (size, size))
-        return cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+        count, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+        if count <= 1:
+            return mask
+        keep = np.zeros(count, dtype=bool)
+        keep[1:] = stats[1:, cv2.CC_STAT_AREA] >= minimum
+        return np.where(keep[labels], 255, 0).astype(np.uint8)
 
     def _find_targets(
         self, mask: np.ndarray, cfg: DetectionSettings | None = None

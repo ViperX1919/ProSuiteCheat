@@ -333,7 +333,7 @@ class MainWindow(QWidget):
         )
         self.shade_slider = shade.input
         noise = self._register(
-            W.make_slider("Noise Filter", 0, 4, 1, value_format=W.noise_text)
+            W.make_slider("Noise Filter", 0, 60, 8, value_format=W.noise_text)
         )
         self.noise_slider = noise.input
         shape = self._register(
