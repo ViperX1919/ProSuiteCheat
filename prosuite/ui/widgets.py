@@ -451,6 +451,19 @@ def tens_of_ms(value: int) -> str:
     return f"{value * 10} ms"
 
 
+def percent(value: int) -> str:
+    return f"{value}%"
+
+
+def shade_text(value: int) -> str:
+    """255 means the shade check is off; anything lower is a window width."""
+    return "Off" if value >= 255 else f"±{value}"
+
+
+def noise_text(value: int) -> str:
+    return "Off" if value <= 0 else f"{2 * value + 1} px"
+
+
 def tenths(value: int) -> str:
     """Render a slider stored as tenths, e.g. ``5`` -> ``0.5``."""
     return str(value / 10.0)

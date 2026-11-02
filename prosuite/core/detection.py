@@ -32,6 +32,17 @@ log = logging.getLogger(__name__)
 #: Longest side, in pixels, of the mask copy sent to the preview panel.
 PREVIEW_SIZE = 180
 MIN_CONTOUR_AREA = 10
+#: Noise rejection. A blob whose longest side is this many times its
+#: shortest is an edge, seam or stripe, not a target.
+MAX_ASPECT = 8.0
+#: Blob area over its convex hull area. Scattered speckle grouped into one
+#: target is mostly empty hull; real targets are solid.
+MIN_FILL = 0.30
+#: A candidate must reappear within this many pixels to count as the same.
+CONFIRM_RADIUS = 60.0
+#: Locked targets within this radius of the last lock get a distance bonus.
+STICKY_RADIUS = 60.0
+STICKY_BONUS = 0.6
 #: Blobs whose centroids are within this distance are treated as one target.
 CONTOUR_GROUP_DISTANCE = 80
 #: Half-width of the square sampled under the crosshair for the triggerbot.
@@ -87,6 +98,16 @@ class DetectionSettings:
     #: them to catch dark or washed-out versions of the target colour.
     sat_floor: int = 100
     val_floor: int = 100
+    #: How far a pixel's saturation and brightness may sit from the picked
+    #: colour's own, 0-255. Hue alone also matches a wall of the same colour
+    #: in another shade; 255 turns the check off.
+    shade_tolerance: int = 120
+    #: Radius in pixels of the morphological open that removes speckle.
+    noise_filter: int = 1
+    #: Blobs bigger than this percentage of the capture area are scenery.
+    max_size: int = 50
+    #: Frames a candidate must persist before it is treated as a target.
+    confirm_frames: int = 2
     #: Ship a small copy of the colour mask to the UI for the live preview.
     preview_enabled: bool = False
 
@@ -239,6 +260,10 @@ class DetectionWorker(QtCore.QThread):
         self._last_box: tuple[int, int, int, int] | None = None
 
         self._preview: np.ndarray | None = None
+        #: (centre, consecutive frames seen) of last frame's candidates.
+        self._seen: list[tuple[np.ndarray, int]] = []
+        #: Centre of the target we locked last frame, for stickiness.
+        self._lock: np.ndarray | None = None
         self._shots = 0
         self._fps = 0.0
         self._frame_ms = 0.0
@@ -365,6 +390,7 @@ class DetectionWorker(QtCore.QThread):
     def _process_frame(self, cfg: DetectionSettings) -> None:
         if not cfg.should_scan:
             self._preview = None
+            self._seen = []
             self._reset_tracking()
             self._aimer.reset_carry()
             self._aimer.take_sent()
@@ -383,7 +409,6 @@ class DetectionWorker(QtCore.QThread):
             return
         region, bgr, stamp = grabbed
         mask = self._colour_mask(bgr, cfg)
-        self._preview = self._make_preview(mask, cfg)
 
         # On a full-screen grab our own overlays are in the picture. Treat
         # them as not-there for both detection and the ego-motion estimate.
@@ -392,6 +417,9 @@ class DetectionWorker(QtCore.QThread):
             ignore = self._ignore_mask(region, bgr.shape[:2], cfg)
             if ignore is not None:
                 mask = cv2.bitwise_and(mask, cv2.bitwise_not(ignore))
+        mask = self._clean_mask(mask, cfg)
+        # The preview shows what the detector sees: after cleanup.
+        self._preview = self._make_preview(mask, cfg)
 
         sent = self._aimer.take_sent()
         if cfg.prediction_enabled or cfg.aiming:
@@ -404,7 +432,7 @@ class DetectionWorker(QtCore.QThread):
         if cfg.trigger_enabled and cfg.aim_key_held:
             self._maybe_trigger(mask, cfg)
 
-        contours = self._find_targets(mask)
+        contours = self._confirm(self._find_targets(mask, cfg), cfg)
         if not contours:
             self._on_target_lost(cfg)
             self._emit(DetectionResult())
@@ -493,18 +521,31 @@ class DetectionWorker(QtCore.QThread):
         Hue is circular (0 and 179 are neighbours), so a window that runs off
         either end - which is every red - wraps into a second range.
         """
-        key = (cfg.detection_rgb, cfg.tolerance, cfg.sat_floor, cfg.val_floor)
+        key = (
+            cfg.detection_rgb,
+            cfg.tolerance,
+            cfg.sat_floor,
+            cfg.val_floor,
+            cfg.shade_tolerance,
+        )
         if key != self._hsv_cache_key:
             r, g, b = cfg.detection_rgb
             swatch = np.array([[[b, g, r]]], dtype=np.uint8)
-            hue = int(cv2.cvtColor(swatch, cv2.COLOR_BGR2HSV)[0][0][0])
+            hue, own_s, own_v = (
+                int(c) for c in cv2.cvtColor(swatch, cv2.COLOR_BGR2HSV)[0][0]
+            )
+            shade = max(0, cfg.shade_tolerance)
+            s_lo = max(cfg.sat_floor, own_s - shade)
+            s_hi = min(255, own_s + shade)
+            v_lo = max(cfg.val_floor, own_v - shade)
+            v_hi = min(255, own_v + shade)
             tol = max(1, cfg.tolerance // 4)
             low, high = hue - tol, hue + tol
 
             def window(lo: int, hi: int):
                 return (
-                    np.array([lo, cfg.sat_floor, cfg.val_floor]),
-                    np.array([hi, 255, 255]),
+                    np.array([lo, s_lo, v_lo]),
+                    np.array([hi, s_hi, v_hi]),
                 )
 
             if high - low >= 179:
@@ -547,8 +588,27 @@ class DetectionWorker(QtCore.QThread):
         self._last_trigger = now
 
     # --- target selection ---
-    def _find_targets(self, mask: np.ndarray) -> list[dict]:
-        """Return grouped targets as dicts of contour, centroid and area."""
+    @staticmethod
+    def _clean_mask(mask: np.ndarray, cfg: DetectionSettings) -> np.ndarray:
+        """Open the mask: erase speckle and hairline edges, keep solid blobs."""
+        radius = cfg.noise_filter
+        if radius <= 0:
+            return mask
+        size = 2 * radius + 1
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (size, size))
+        return cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+
+    def _find_targets(
+        self, mask: np.ndarray, cfg: DetectionSettings | None = None
+    ) -> list[dict]:
+        """Return grouped targets as dicts of contour, centroid and area.
+
+        Blobs that cannot be a target are dropped here: ones covering too
+        much of the view (walls, floors, sky), hairline strips, and groups
+        that are mostly empty hull.
+        """
+        cfg = cfg or DetectionSettings()
+        max_area = mask.shape[0] * mask.shape[1] * cfg.max_size / 100.0
         contours, _ = cv2.findContours(
             mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
         )
@@ -559,7 +619,12 @@ class DetectionWorker(QtCore.QThread):
             if moments["m00"] <= 0:
                 continue
             area = cv2.contourArea(contour)
-            if area <= MIN_CONTOUR_AREA:
+            if area <= MIN_CONTOUR_AREA or area > max_area:
+                continue
+            # Rotated rectangle, so a diagonal edge is as thin as a flat one.
+            (_, _), (rw, rh), _ = cv2.minAreaRect(contour)
+            short, long_ = min(rw, rh), max(rw, rh)
+            if short < 2 or long_ > MAX_ASPECT * short:
                 continue
             blobs.append(
                 {
@@ -572,7 +637,40 @@ class DetectionWorker(QtCore.QThread):
                 }
             )
 
-        return self._group_blobs(blobs)
+        solid = []
+        for group in self._group_blobs(blobs):
+            hull_area = cv2.contourArea(cv2.convexHull(group["contour"]))
+            if hull_area > 0 and group["area"] / hull_area < MIN_FILL:
+                continue
+            if group["area"] > max_area:
+                continue
+            solid.append(group)
+        return solid
+
+    def _confirm(self, groups: list[dict], cfg: DetectionSettings) -> list[dict]:
+        """Keep only candidates seen near the same spot for several frames.
+
+        A flicker of matching pixels - sparkle, a texture catching the light
+        - appears for a frame and moves; a target stays.
+        """
+        need = max(1, cfg.confirm_frames)
+        if need == 1:
+            self._seen = []
+            return groups
+        previous, seen, confirmed = self._seen, [], []
+        for group in groups:
+            centre = np.array(group["center"])
+            hits = 1
+            if previous:
+                gaps = [float(np.linalg.norm(centre - c)) for c, _ in previous]
+                best = int(np.argmin(gaps))
+                if gaps[best] <= CONFIRM_RADIUS:
+                    hits = previous[best][1] + 1
+            seen.append((centre, min(hits, need)))
+            if hits >= need:
+                confirmed.append(group)
+        self._seen = seen
+        return confirmed
 
     @staticmethod
     def _group_blobs(
@@ -694,12 +792,16 @@ class DetectionWorker(QtCore.QThread):
         fov = cfg.fov
         if cfg.priority == "Proximity":
             distances = np.linalg.norm(centroids - np.array([fov, fov]), axis=1)
+            if self._lock is not None:
+                near_lock = np.linalg.norm(centroids - self._lock, axis=1) <= STICKY_RADIUS
+                distances = np.where(near_lock, distances * STICKY_BONUS, distances)
             index = int(np.argmin(distances))
         else:
             index = int(np.argmax([t["area"] for t in targets]))
 
         target = targets[index]
         cx, cy = target["center"]
+        self._lock = np.array([cx, cy])
         x, y, w, h = cv2.boundingRect(target["contour"])
 
         aim_x, aim_y = cx, cy
@@ -848,6 +950,7 @@ class DetectionWorker(QtCore.QThread):
         self._last_box = None
         self._last_update = None
         self._lost_since = None
+        self._lock = None
 
     def reset_prediction(self) -> None:
         """Clear all tracking state - called when the aimbot is toggled."""

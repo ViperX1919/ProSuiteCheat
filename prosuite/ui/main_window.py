@@ -326,6 +326,21 @@ class MainWindow(QWidget):
         val_floor = self._register(W.make_slider("Min Brightness", 0, 255, 100))
         self.val_floor_slider = val_floor.input
 
+        shade = self._register(
+            W.make_slider("Shade Match", 10, 255, 120, value_format=W.shade_text)
+        )
+        self.shade_slider = shade.input
+        noise = self._register(
+            W.make_slider("Noise Filter", 0, 4, 1, value_format=W.noise_text)
+        )
+        self.noise_slider = noise.input
+        max_size = self._register(
+            W.make_slider("Max Target Size", 5, 100, 50, value_format=W.percent)
+        )
+        self.max_size_slider = max_size.input
+        confirm = self._register(W.make_slider("Confirm Frames", 1, 6, 2))
+        self.confirm_slider = confirm.input
+
         smoothness = self._register(W.make_slider("Smoothness", 1, 100, 50))
         self.smoothness_slider = smoothness.input
 
@@ -367,6 +382,10 @@ class MainWindow(QWidget):
             tolerance,
             sat_floor,
             val_floor,
+            shade,
+            noise,
+            max_size,
+            confirm,
             smoothness,
             speed,
         ):
@@ -749,6 +768,10 @@ class MainWindow(QWidget):
             self.tolerance_slider,
             self.sat_floor_slider,
             self.val_floor_slider,
+            self.shade_slider,
+            self.noise_slider,
+            self.max_size_slider,
+            self.confirm_slider,
             self.smoothness_slider,
             self.speed_slider,
             self.y_offset_slider,
@@ -788,6 +811,10 @@ class MainWindow(QWidget):
             tolerance=self.tolerance_slider.value(),
             sat_floor=self.sat_floor_slider.value(),
             val_floor=self.val_floor_slider.value(),
+            shade_tolerance=self.shade_slider.value(),
+            noise_filter=self.noise_slider.value(),
+            max_size=self.max_size_slider.value(),
+            confirm_frames=self.confirm_slider.value(),
             aim_enabled=self.features["aim"].is_on(),
             aim_key_held=self.key_states.get("aim", False),
             priority=self.priority_dropdown.currentText(),

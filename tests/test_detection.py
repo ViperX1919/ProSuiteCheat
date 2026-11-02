@@ -26,6 +26,9 @@ w = DetectionWorker(FakeAimer())
 
 
 def hit(bgr_colour, **kw):
+    # Shade match off: these cases are about the floors alone (test_noise.py
+    # covers the shade window, which otherwise overrides a lowered floor).
+    kw.setdefault("shade_tolerance", 255)
     cfg = DetectionSettings(detection_rgb=(255, 0, 0), tolerance=80, **kw)
     frame = np.full((20, 20, 3), bgr_colour, np.uint8)
     return bool(w._colour_mask(frame, cfg).any())

@@ -44,6 +44,7 @@ ORIGINAL_KEYS = {
 # (the loader falls back to a default), so these may only ever be additions.
 ADDED_KEYS = {
     "trigger_delay", "trigger_reaction", "capture_window", "sat_floor", "val_floor",
+    "shade_tolerance", "noise_filter", "max_size", "confirm_frames",
     "crosshair_color", "crosshair_style", "crosshair_size", "crosshair_thickness", "crosshair_gap",
 }
 data = settings.collect(win)
