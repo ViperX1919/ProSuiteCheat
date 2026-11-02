@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 
 from PySide6 import QtCore, QtGui
@@ -22,12 +23,14 @@ from ..core import capture
 from ..core.aimer import SmoothAimer
 from ..core.detection import DetectionWorker
 from ..core.input_listener import InputListener
+from ..core.session import SessionStats, distance
 from ..paths import resource_path
 from . import widgets as W
 from .accent import AccentSwatches
 from .arraylist import ArrayListWidget
 from .nav import IconNav
 from .picker import ScreenPicker
+from .session_panel import SessionPanel
 from .preview import MaskPreview
 from .overlays import (
     CrosshairOverlay,
@@ -120,6 +123,7 @@ class MainWindow(QWidget):
         self.render_overlay = RenderOverlay()
         self.crosshair_overlay = CrosshairOverlay()
         self.toast = ToastOverlay()
+        self.session = SessionStats()
         self.prediction_overlay = PredictionAimOverlay(self.prediction_color)
         self.radar_widget = RadarWidget(esp_color=self.esp_color)
         self.array_list = ArrayListWidget()
@@ -168,6 +172,14 @@ class MainWindow(QWidget):
         self._rect_timer.setInterval(300)
         self._rect_timer.timeout.connect(self._sync_own_rects)
         self._rect_timer.start()
+
+        # The session readout only needs a couple of refreshes a second.
+        self._session_timer = QtCore.QTimer(self)
+        self._session_timer.setInterval(500)
+        self._session_timer.timeout.connect(
+            lambda: self.session_panel.set_summary(self.session.summary())
+        )
+        self._session_timer.start()
 
         self.worker.result_ready.connect(self._on_result, Qt.QueuedConnection)
         self.worker.start()
@@ -569,6 +581,10 @@ class MainWindow(QWidget):
         page.add_heading("Interface")
         page.add_widget(notify.widget)
         page.add_separator()
+        page.add_heading("Session")
+        self.session_panel = SessionPanel()
+        page.add_widget(self.session_panel)
+        page.add_separator()
         page.add_heading("Config")
         page.add_widget(self.save_button)
         page.add_widget(self.load_button)
@@ -682,6 +698,7 @@ class MainWindow(QWidget):
         self.theme_dropdown.currentTextChanged.connect(self.apply_theme)
         self.reset_ui_button.clicked.connect(self._reset_theme)
         self.accent_swatches.chosen.connect(self._set_accent)
+        self.session_panel.reset_requested.connect(self._reset_session)
         self.eyedropper_button.clicked.connect(self._start_eyedropper)
         self.save_button.clicked.connect(self._save_settings)
         self.load_button.clicked.connect(self._load_settings)
@@ -763,6 +780,22 @@ class MainWindow(QWidget):
         if self._own_rects() != self.worker.settings.ignore_rects:
             self.push_settings()
 
+    # --- session statistics ---
+    def _feed_session(self, result) -> None:
+        stats = result.stats
+        if stats is None:
+            return
+        gap = None
+        if result.has_target and result.screen_pos is not None:
+            gap = distance(
+                result.screen_pos, (self.screen_center.x(), self.screen_center.y())
+            )
+        self.session.update(time.perf_counter(), stats.scanning, gap, stats.shots)
+
+    def _reset_session(self) -> None:
+        self.session.reset()
+        self.session_panel.set_summary(self.session.summary())
+
     # --- notifications ---
     def _announce(self, name: str, on: bool) -> None:
         """Show a toast for a module switch, unless it isn't the user's doing."""
@@ -802,6 +835,7 @@ class MainWindow(QWidget):
     def _on_result(self, result) -> None:
         """Paint the latest detection frame. Runs on the GUI thread."""
         self.status.set_stats(result.stats, self.features["prediction"].is_on())
+        self._feed_session(result)
         if self.features["preview"].is_on():
             self.mask_preview.set_mask(result.preview)
         elif self.mask_preview.lit:
@@ -1039,6 +1073,7 @@ class MainWindow(QWidget):
         self.array_list.set_text_color(self.arraylist_color)
         self.status.apply_theme(palette.content_box, palette.text, self.theme_color)
         self.mask_preview.apply_theme(self.theme_color, palette.background, palette.text)
+        self.session_panel.apply_theme(palette.text, self.theme_color)
         self.accent_swatches.set_current(self.theme_color)
 
     # ------------------------------------------------------------------

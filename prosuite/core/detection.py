@@ -166,6 +166,8 @@ class FrameStats:
     source: str = "Screen"
     #: False while every module is off and the worker is just idling.
     scanning: bool = False
+    #: Triggerbot clicks since the worker started.
+    shots: int = 0
 
 
 @dataclass(frozen=True)
@@ -237,6 +239,7 @@ class DetectionWorker(QtCore.QThread):
         self._last_box: tuple[int, int, int, int] | None = None
 
         self._preview: np.ndarray | None = None
+        self._shots = 0
         self._fps = 0.0
         self._frame_ms = 0.0
         self._loop_started = time.perf_counter()
@@ -312,6 +315,7 @@ class DetectionWorker(QtCore.QThread):
             lag=self._ego.lag,
             source=cfg.capture_window or "Screen",
             scanning=cfg.should_scan,
+            shots=self._shots,
         )
 
     def _emit(self, result: DetectionResult) -> None:
@@ -539,6 +543,7 @@ class DetectionWorker(QtCore.QThread):
             return
 
         self._aimer.click()
+        self._shots += 1
         self._last_trigger = now
 
     # --- target selection ---

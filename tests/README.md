@@ -15,6 +15,7 @@ python tests/test_loop.py       # closed loop: no ringing when moves lag
 python tests/test_detection.py  # colour floors, frame stats, mask preview
 python tests/test_widgets.py    # status strip, preview, eyedropper, accents
 python tests/test_autosave.py   # atomic writes, restore, damaged files
+python tests/test_session.py    # session stats: targets, lock time, on-target share
 ```
 
 Run them all:

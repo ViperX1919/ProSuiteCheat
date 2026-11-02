@@ -195,6 +195,22 @@ pump(40)
 win.toast.hide()
 t.notify = real_notify
 
+# --- session panel ---
+win.session.reset()
+cx, cy = win.screen_center.x(), win.screen_center.y()
+far = DetectionResult(has_target=True, screen_pos=(cx + 300, cy), stats=FrameStats(fps=100, scanning=True, shots=0))
+near = DetectionResult(has_target=True, screen_pos=(cx + 4, cy), stats=FrameStats(fps=100, scanning=True, shots=3))
+for _ in range(10):
+    win._feed_session(far); time.sleep(0.01)
+for _ in range(10):
+    win._feed_session(near); time.sleep(0.01)
+pump(700)
+check("panel shows a target seen and locked", win.session_panel.values["targets"].text() == "1" and win.session_panel.values["locks"].text() == "1",
+      f"{win.session_panel.values['targets'].text()}/{win.session_panel.values['locks'].text()}")
+check("panel shows time to lock", win.session_panel.values["lock_time"].text().endswith("ms"), win.session_panel.values["lock_time"].text())
+win.session_panel.reset_button.click(); pump(50)
+check("reset clears the readout", win.session_panel.values["targets"].text() == "0" and win.session_panel.values["on_target"].text() == "-")
+
 win.close()
 print("\nFAILURES:", failures or "none")
 sys.exit(1 if failures else 0)
