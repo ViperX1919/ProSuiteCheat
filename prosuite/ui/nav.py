@@ -38,6 +38,9 @@ class IconNav(QWidget):
         super().__init__(parent)
         self.theme_color = theme_color
         self.setFixedWidth(self.WIDTH)
+        # Without this a plain QWidget ignores its own stylesheet background, so
+        # the sidebar colour would stop where its children do.
+        self.setAttribute(Qt.WA_StyledBackground, True)
         self.current_index = -1
         self._hovered_item: QListWidgetItem | None = None
 
