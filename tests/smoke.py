@@ -42,7 +42,10 @@ ORIGINAL_KEYS = {
 }
 # Keys added deliberately since the original. Old configs must still load
 # (the loader falls back to a default), so these may only ever be additions.
-ADDED_KEYS = {"trigger_delay", "trigger_reaction", "capture_window", "sat_floor", "val_floor"}
+ADDED_KEYS = {
+    "trigger_delay", "trigger_reaction", "capture_window", "sat_floor", "val_floor",
+    "crosshair_color", "crosshair_style", "crosshair_size", "crosshair_thickness", "crosshair_gap",
+}
 data = settings.collect(win)
 check("no original key was dropped", not ORIGINAL_KEYS - set(data),
       f"missing={ORIGINAL_KEYS - set(data)}")

@@ -132,6 +132,40 @@ check("toggle paints mid-hover without error", True)
 check("window fade-in finishes fully opaque", abs(win.windowOpacity() - 1.0) < 0.01, f"{win.windowOpacity():.2f}")
 tg.setChecked(False)
 
+# --- crosshair ---
+from prosuite import constants as _C
+ch = win.crosshair_overlay
+for style in _C.CROSSHAIR_STYLES:
+    win.crosshair_style_dropdown.setCurrentText(style)
+    ch.grab()
+check("every crosshair style paints", ch.style == _C.CROSSHAIR_STYLES[-1])
+win.crosshair_size_slider.setValue(22); win.crosshair_thickness_slider.setValue(3); win.crosshair_gap_slider.setValue(7)
+check("sliders drive the overlay", (ch.length, ch.thickness, ch.gap) == (22, 3, 7), f"{(ch.length, ch.thickness, ch.gap)}")
+win.features["crosshair"].toggle.setChecked(True); pump(80)
+check("toggle shows the crosshair", ch.isVisible())
+c = win.screen_center
+check("crosshair is centred on the screen", abs(ch.geometry().center().x() - c.x()) <= 1 and abs(ch.geometry().center().y() - c.y()) <= 1,
+      f"{ch.geometry().center().x(), ch.geometry().center().y()} vs {c.x(), c.y()}")
+check("crosshair is small, not fullscreen", ch.width() <= 200 and ch.height() <= 200)
+win.features["crosshair"].toggle.setChecked(False); pump(80)
+check("toggle hides the crosshair", not ch.isVisible())
+from prosuite import settings as _S
+win.set_crosshair_color(QColor("#00FF88"))
+saved = _S.collect(win)
+check("crosshair settings are saved", saved["crosshair_color"] == "#00ff88" and saved["crosshair_size"] == 22 and saved["crosshair_style"] == _C.CROSSHAIR_STYLES[-1])
+win.set_crosshair_color(QColor("#FFFFFF")); win.crosshair_size_slider.setValue(5)
+_S.apply(win, saved)
+check("crosshair settings round-trip", ch.color.name() == "#00ff88" and ch.length == 22)
+white = QColor("#FFFFFF")
+import cv2, numpy as _np
+from prosuite.core.detection import DetectionSettings, DetectionWorker
+class _A:
+    def reset_carry(self): pass
+    def take_sent(self): return (0, 0)
+frame = _np.full((20, 20, 3), 255, _np.uint8)
+check("white crosshair is invisible to the colour filter",
+      not DetectionWorker(_A())._colour_mask(frame, DetectionSettings(detection_rgb=(255, 0, 0))).any())
+
 win.close()
 print("\nFAILURES:", failures or "none")
 sys.exit(1 if failures else 0)

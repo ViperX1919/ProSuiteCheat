@@ -56,6 +56,12 @@ def collect(window) -> dict[str, Any]:
         # Radar
         "radar_pos": [window.radar_widget.x(), window.radar_widget.y()],
         "radar_color": window.radar_widget.esp_color.name(),
+        # Crosshair
+        "crosshair_color": window.crosshair_overlay.color.name(),
+        "crosshair_style": window.crosshair_style_dropdown.currentText(),
+        "crosshair_size": window.crosshair_size_slider.value(),
+        "crosshair_thickness": window.crosshair_thickness_slider.value(),
+        "crosshair_gap": window.crosshair_gap_slider.value(),
         # UI
         "ui_theme_color": window.theme_color.name(),
         "ui_theme": window.theme_dropdown.currentText(),
@@ -131,6 +137,9 @@ def _apply_sliders(window, data: dict[str, Any]) -> None:
         (window.trigger_reaction_slider, "trigger_reaction", 0),
         (window.opacity_slider, "opacity", 100),
         (window.arraylist_size_slider, "arraylist_size", 14),
+        (window.crosshair_size_slider, "crosshair_size", 10),
+        (window.crosshair_thickness_slider, "crosshair_thickness", 2),
+        (window.crosshair_gap_slider, "crosshair_gap", 4),
     ):
         value = data.get(key, default)
         slider.setValue(value if isinstance(value, int) else default)
@@ -141,6 +150,7 @@ def _apply_dropdowns(window, data: dict[str, Any]) -> None:
         (window.priority_dropdown, "priority", "Proximity", C.AIM_PRIORITIES),
         (window.aim_position_dropdown, "aim_pos", "Body", C.AIM_POSITIONS),
         (window.esp_mode_dropdown, "esp_mode", "Box", C.ESP_MODES),
+        (window.crosshair_style_dropdown, "crosshair_style", "Cross", C.CROSSHAIR_STYLES),
         (
             window.arraylist_style_dropdown,
             "arraylist_style",
@@ -158,6 +168,7 @@ def _apply_colors(window, data: dict[str, Any]) -> None:
     window.set_prediction_color(_color(data.get("prediction_color"), "#00FFFF"))
     window.set_esp_color(_color(data.get("esp_color"), C.ACCENT_RED))
     window.set_radar_color(_color(data.get("radar_color"), C.ACCENT_RED))
+    window.set_crosshair_color(_color(data.get("crosshair_color"), "#FFFFFF"))
     window.set_arraylist_color(_color(data.get("arraylist_color"), C.ACCENT_RED))
     window.theme_color = _color(data.get("ui_theme_color"), C.ACCENT_RED)
 

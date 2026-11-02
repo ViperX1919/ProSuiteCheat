@@ -29,7 +29,13 @@ from .arraylist import ArrayListWidget
 from .nav import IconNav
 from .picker import ScreenPicker
 from .preview import MaskPreview
-from .overlays import FOVOverlay, PredictionAimOverlay, RadarWidget, RenderOverlay
+from .overlays import (
+    CrosshairOverlay,
+    FOVOverlay,
+    PredictionAimOverlay,
+    RadarWidget,
+    RenderOverlay,
+)
 from .sections import CheatMenuPage, CollapsibleSection, make_separator
 from .status import StatusStrip
 from .widgets import AnimatedStackedWidget, Control, ToggleSwitch
@@ -111,6 +117,7 @@ class MainWindow(QWidget):
         # --- overlays ---
         self.fov_overlay = FOVOverlay(self.esp_color)
         self.render_overlay = RenderOverlay()
+        self.crosshair_overlay = CrosshairOverlay()
         self.prediction_overlay = PredictionAimOverlay(self.prediction_color)
         self.radar_widget = RadarWidget(esp_color=self.esp_color)
         self.array_list = ArrayListWidget()
@@ -471,6 +478,32 @@ class MainWindow(QWidget):
         self.sections.append(fov_section)
         page.add_separator()
 
+        # --- Crosshair ---
+        cross_toggle = self._register(
+            W.make_toggle("Enable Crosshair", self.theme_color)
+        )
+        self._add_feature(
+            Feature(name="crosshair", display_name="Crosshair", toggle=cross_toggle.input)
+        )
+        cross_section = CollapsibleSection(cross_toggle.widget)
+        cross_color = self._register(W.make_color_picker("Crosshair Color", "#FFFFFF"))
+        self.crosshair_color_button = cross_color.input
+        cross_style = self._register(
+            W.make_dropdown("Crosshair Style", C.CROSSHAIR_STYLES)
+        )
+        self.crosshair_style_dropdown = cross_style.input
+        cross_size = self._register(W.make_slider("Crosshair Size", 2, 40, 10))
+        self.crosshair_size_slider = cross_size.input
+        cross_thick = self._register(W.make_slider("Crosshair Thickness", 1, 6, 2))
+        self.crosshair_thickness_slider = cross_thick.input
+        cross_gap = self._register(W.make_slider("Crosshair Gap", 0, 20, 4))
+        self.crosshair_gap_slider = cross_gap.input
+        for control in (cross_color, cross_style, cross_size, cross_thick, cross_gap):
+            cross_section.add_widget(control.widget)
+        page.add_section(cross_section)
+        self.sections.append(cross_section)
+        page.add_separator()
+
         # --- Arraylist ---
         arraylist_toggle = self._register(
             W.make_toggle("Enable Arraylist", self.theme_color)
@@ -578,6 +611,22 @@ class MainWindow(QWidget):
         )
         self.features["esp"].toggle.toggled.connect(
             lambda on: self._set_overlay_visible(self.render_overlay, on)
+        )
+        self.features["crosshair"].toggle.toggled.connect(
+            lambda on: self._set_overlay_visible(self.crosshair_overlay, on)
+        )
+        self.crosshair_color_button.clicked.connect(self._pick_crosshair_color)
+        self.crosshair_style_dropdown.currentTextChanged.connect(
+            lambda text: self.crosshair_overlay.configure(style=text)
+        )
+        self.crosshair_size_slider.valueChanged.connect(
+            lambda v: self.crosshair_overlay.configure(length=v)
+        )
+        self.crosshair_thickness_slider.valueChanged.connect(
+            lambda v: self.crosshair_overlay.configure(thickness=v)
+        )
+        self.crosshair_gap_slider.valueChanged.connect(
+            lambda v: self.crosshair_overlay.configure(gap=v)
         )
         self.esp_mode_dropdown.currentTextChanged.connect(
             lambda mode: setattr(self.render_overlay, "esp_mode", mode)
@@ -831,6 +880,9 @@ class MainWindow(QWidget):
             return
         self._overlays_shown = True
         self._set_overlay_visible(self.render_overlay, self.features["esp"].is_on())
+        self._set_overlay_visible(
+            self.crosshair_overlay, self.features["crosshair"].is_on()
+        )
         self._set_overlay_visible(self.fov_overlay, self.features["show_fov"].is_on())
         self.array_list.setVisible(self.arraylist_toggle.isChecked())
         self.radar_widget.setVisible(self.features["radar"].is_on())
@@ -858,6 +910,14 @@ class MainWindow(QWidget):
         self.esp_color_button.setStyleSheet(C.color_button_style(color.name()))
         self.fov_overlay.set_color(color)
         self.render_overlay.color = color
+
+    def set_crosshair_color(self, color: QColor) -> None:
+        self.crosshair_overlay.set_color(color)
+        self.crosshair_color_button.setStyleSheet(C.color_button_style(color.name()))
+
+    def _pick_crosshair_color(self) -> None:
+        if (c := self._choose(self.crosshair_overlay.color)) is not None:
+            self.set_crosshair_color(c)
 
     def set_radar_color(self, color: QColor) -> None:
         self.radar_widget.esp_color = color
@@ -986,6 +1046,7 @@ class MainWindow(QWidget):
             self.array_list,
             self.render_overlay,
             self.fov_overlay,
+            self.crosshair_overlay,
             self.radar_widget,
             self.prediction_overlay,
         ):

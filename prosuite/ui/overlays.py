@@ -78,6 +78,72 @@ class FOVOverlay(_OverlayBase):
             painter.end()
 
 
+class CrosshairOverlay(_OverlayBase):
+    """A custom crosshair at the middle of the screen.
+
+    Small and click-through rather than fullscreen, so it costs next to
+    nothing to composite. White by default: it is unsaturated, so the colour
+    filter ignores it even when it sits right on a target.
+    """
+
+    SIZE = 140
+
+    def __init__(self, color: QColor | None = None):
+        super().__init__()
+        self.color = color or QColor("#FFFFFF")
+        self.style = "Cross"
+        #: Arm length in pixels (or dot/circle radius).
+        self.length = 10
+        self.thickness = 2
+        #: Empty space between the centre and the start of each arm.
+        self.gap = 4
+
+    def show_overlay(self) -> None:
+        centre = self.screen_geometry().center()
+        half = self.SIZE // 2
+        self.setGeometry(centre.x() - half, centre.y() - half, self.SIZE, self.SIZE)
+        self.show()
+
+    def set_color(self, color: QColor) -> None:
+        self.color = color
+        self.update()
+
+    def configure(self, **changes) -> None:
+        for name, value in changes.items():
+            setattr(self, name, value)
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        try:
+            c = QPointF(self.width() / 2, self.height() / 2)
+            outline = QColor(0, 0, 0, 170)
+            for colour, extra in ((outline, 2.0), (self.color, 0.0)):
+                pen = QPen(colour, self.thickness + extra, Qt.SolidLine, Qt.FlatCap)
+                painter.setPen(pen)
+                painter.setBrush(Qt.NoBrush)
+                self._draw(painter, c, colour, extra)
+        finally:
+            painter.end()
+
+    def _draw(self, painter: QPainter, c: QPointF, colour: QColor, extra: float) -> None:
+        style, n, gap = self.style, float(self.length), float(self.gap)
+        if style in ("Cross", "Cross + Dot"):
+            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                painter.drawLine(
+                    QPointF(c.x() + dx * gap, c.y() + dy * gap),
+                    QPointF(c.x() + dx * (gap + n), c.y() + dy * (gap + n)),
+                )
+        if style in ("Dot", "Cross + Dot"):
+            r = max(1.0, self.thickness / 2.0 + 0.5) + extra / 2
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(colour)
+            painter.drawEllipse(c, r, r)
+        if style == "Circle":
+            painter.setRenderHint(QPainter.Antialiasing)
+            painter.drawEllipse(c, n, n)
+
+
 class RenderOverlay(_OverlayBase):
     """Draws the ESP box/corners/head-circle/pixel mask over the target."""
 
