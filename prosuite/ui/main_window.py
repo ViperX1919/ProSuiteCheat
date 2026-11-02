@@ -134,9 +134,13 @@ class MainWindow(QWidget):
 
         column = QVBoxLayout()
         column.setSpacing(8)
-        column.setContentsMargins(0, 0, 20, 14)
+        column.setContentsMargins(0, 0, 0, 14)
         column.addWidget(self.stack, 1)
-        column.addWidget(self.status)
+        # Same side margins as the pages' content boxes, so the edges line up.
+        status_row = QHBoxLayout()
+        status_row.setContentsMargins(20, 0, 20, 0)
+        status_row.addWidget(self.status)
+        column.addLayout(status_row)
 
         layout.addWidget(self.nav)
         layout.addLayout(column, 1)
@@ -169,6 +173,20 @@ class MainWindow(QWidget):
             # Guarantees the capture thread is joined even if the app exits
             # without the window receiving a close event.
             app.aboutToQuit.connect(self.shutdown)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if getattr(self, "_faded_in", False):
+            return
+        self._faded_in = True
+        # A short fade rather than the window popping in fully formed.
+        self.setWindowOpacity(0.0)
+        self._fade_in = QtCore.QPropertyAnimation(self, b"windowOpacity", self)
+        self._fade_in.setDuration(280)
+        self._fade_in.setStartValue(0.0)
+        self._fade_in.setEndValue(1.0)
+        self._fade_in.setEasingCurve(QtCore.QEasingCurve.OutCubic)
+        self._fade_in.start()
 
     # ------------------------------------------------------------------
     # Screen geometry

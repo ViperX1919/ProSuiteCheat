@@ -114,6 +114,24 @@ pump(50)
 check("accent swatch changes the theme colour", win.theme_color.name().lower() == hexcolour.lower(), win.theme_color.name())
 check("selected swatch is ringed", sum(s.selected for s in win.accent_swatches._swatches) == 1)
 
+# --- toggle polish ---
+tg = win.features["esp"].toggle
+tg.setChecked(False); pump(300)
+check("toggle progress is 0 when off", tg.progress == 0.0)
+tg.setChecked(True); pump(90)
+mid = tg.progress
+pump(300)
+check("track colour follows the knob through the slide", 0.0 < mid < 1.0 and tg.progress == 1.0, f"mid={mid:.2f}")
+from PySide6.QtCore import QEvent
+tg.enterEvent(QEvent(QEvent.Enter)); pump(300)
+check("hover halo eases in", tg._hover > 0.95, f"{tg._hover:.2f}")
+tg.leaveEvent(QEvent(QEvent.Leave)); pump(300)
+check("hover halo eases out", tg._hover < 0.05, f"{tg._hover:.2f}")
+tg.grab()
+check("toggle paints mid-hover without error", True)
+check("window fade-in finishes fully opaque", abs(win.windowOpacity() - 1.0) < 0.01, f"{win.windowOpacity():.2f}")
+tg.setChecked(False)
+
 win.close()
 print("\nFAILURES:", failures or "none")
 sys.exit(1 if failures else 0)

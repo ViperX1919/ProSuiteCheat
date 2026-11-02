@@ -89,6 +89,9 @@ class StatusStrip(QWidget):
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self.setFixedHeight(self.HEIGHT)
+        # A plain QWidget subclass ignores its own stylesheet background
+        # unless asked to honour it.
+        self.setAttribute(Qt.WA_StyledBackground, True)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(18, 0, 18, 0)

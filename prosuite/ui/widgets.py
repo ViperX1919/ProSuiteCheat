@@ -99,8 +99,36 @@ class ToggleSwitch(QWidget):
         self._animation.setDuration(200)
         self._animation.setEasingCurve(QEasingCurve.InOutCubic)
 
+        # Hover halo: eases in and out instead of popping.
+        self._hover = 0.0
+        self._hover_anim = QtCore.QVariantAnimation(self)
+        self._hover_anim.setDuration(160)
+        self._hover_anim.valueChanged.connect(self._on_hover)
+
     def mousePressEvent(self, event) -> None:
         self.setChecked(not self._checked)
+
+    def _on_hover(self, value) -> None:
+        self._hover = float(value)
+        self.update()
+
+    def _hover_to(self, target: float) -> None:
+        self._hover_anim.stop()
+        self._hover_anim.setStartValue(self._hover)
+        self._hover_anim.setEndValue(target)
+        self._hover_anim.start()
+
+    def enterEvent(self, event) -> None:
+        self._hover_to(1.0)
+
+    def leaveEvent(self, event) -> None:
+        self._hover_to(0.0)
+
+    @property
+    def progress(self) -> float:
+        """0 when off, 1 when on, following the knob through the slide."""
+        travel = max(1, self.width() - self.height())
+        return min(1.0, max(0.0, self._knob_x / travel))
 
     def setChecked(self, checked: bool) -> None:
         if self._checked == checked:
@@ -128,9 +156,22 @@ class ToggleSwitch(QWidget):
         try:
             painter.setRenderHint(QPainter.Antialiasing)
             rect = self.rect()
-            painter.setBrush(QColor(self.theme_color) if self._checked else QColor("#555"))
+            radius = rect.height() / 2
+            on, off = QColor(self.theme_color), QColor("#555")
+            t = self.progress
+            track = QColor(
+                round(off.red() + (on.red() - off.red()) * t),
+                round(off.green() + (on.green() - off.green()) * t),
+                round(off.blue() + (on.blue() - off.blue()) * t),
+            )
             painter.setPen(Qt.NoPen)
-            painter.drawRoundedRect(rect, rect.height() / 2, rect.height() / 2)
+            if self._hover > 0:
+                halo = QColor(on if t > 0.5 else QColor("#999"))
+                halo.setAlphaF(0.28 * self._hover)
+                painter.setBrush(halo)
+                painter.drawRoundedRect(rect.adjusted(-3, -3, 3, 3), radius + 3, radius + 3)
+            painter.setBrush(track)
+            painter.drawRoundedRect(rect, radius, radius)
 
             knob = QtCore.QRectF(self._knob_x, 2, rect.height() - 4, rect.height() - 4)
             painter.setBrush(QColor("#FFF"))
