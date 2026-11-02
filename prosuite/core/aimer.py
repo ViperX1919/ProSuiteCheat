@@ -58,6 +58,10 @@ class SmoothAimer:
         self.smoothness = smoothness
         self.speed = speed
         # Reused across calls so the hot path does no per-frame allocation.
+        # Fractional pixels SendInput could not express last time, carried over
+        # so slow approaches still arrive instead of stalling short.
+        self._carry_x = 0.0
+        self._carry_y = 0.0
         self._extra = ctypes.c_ulong(0)
         self._extra_ptr = ctypes.pointer(self._extra)
         self._event = Input(ctypes.c_ulong(INPUT_MOUSE), _InputUnion())
@@ -75,8 +79,17 @@ class SmoothAimer:
         step_x = (dx / smoothness) * (self.speed / 10.0)
         step_y = (dy / smoothness) * (self.speed / 10.0)
 
-        if abs(step_x) > self.MIN_STEP or abs(step_y) > self.MIN_STEP:
-            self._dispatch(int(step_x), int(step_y), MOUSEEVENTF_MOVE)
+        total_x = step_x + self._carry_x
+        total_y = step_y + self._carry_y
+        out_x, out_y = int(total_x), int(total_y)
+        self._carry_x = total_x - out_x
+        self._carry_y = total_y - out_y
+        if out_x or out_y:
+            self._dispatch(out_x, out_y, MOUSEEVENTF_MOVE)
+
+    def reset_carry(self) -> None:
+        """Drop leftover sub-pixels, e.g. when the target changes or is lost."""
+        self._carry_x = self._carry_y = 0.0
 
     def click(self) -> None:
         """Send a left press/release pair.

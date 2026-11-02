@@ -242,21 +242,43 @@ class DetectionWorker(QtCore.QThread):
         bgr = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
         hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
 
-        lower, upper = self._hsv_range(cfg)
-        return region, cv2.inRange(hsv, lower, upper)
+        mask = None
+        for lower, upper in self._hsv_ranges(cfg):
+            part = cv2.inRange(hsv, lower, upper)
+            mask = part if mask is None else cv2.bitwise_or(mask, part)
+        return region, mask
 
-    def _hsv_range(self, cfg: DetectionSettings) -> tuple[np.ndarray, np.ndarray]:
-        """Hue window around the target colour, cached between frames."""
+    def _hsv_ranges(
+        self, cfg: DetectionSettings
+    ) -> list[tuple[np.ndarray, np.ndarray]]:
+        """Hue window(s) around the target colour, cached between frames.
+
+        Hue is circular (0 and 179 are neighbours), so a window that runs off
+        either end - which is every red - wraps into a second range.
+        """
         key = (cfg.detection_rgb, cfg.tolerance)
         if key != self._hsv_cache_key:
             r, g, b = cfg.detection_rgb
             swatch = np.array([[[b, g, r]]], dtype=np.uint8)
             hue = int(cv2.cvtColor(swatch, cv2.COLOR_BGR2HSV)[0][0][0])
-            hue_tolerance = max(1, cfg.tolerance // 4)
-            self._hsv_bounds = (
-                np.array([max(0, hue - hue_tolerance), SATURATION_FLOOR, VALUE_FLOOR]),
-                np.array([min(179, hue + hue_tolerance), 255, 255]),
-            )
+            tol = max(1, cfg.tolerance // 4)
+            low, high = hue - tol, hue + tol
+
+            def window(lo: int, hi: int):
+                return (
+                    np.array([lo, SATURATION_FLOOR, VALUE_FLOOR]),
+                    np.array([hi, 255, 255]),
+                )
+
+            if high - low >= 179:
+                spans = [(0, 179)]
+            elif low < 0:
+                spans = [(0, high), (180 + low, 179)]
+            elif high > 179:
+                spans = [(low, 179), (0, high - 180)]
+            else:
+                spans = [(low, high)]
+            self._hsv_bounds = [window(lo, hi) for lo, hi in spans]
             self._hsv_cache_key = key
         return self._hsv_bounds
 
@@ -545,6 +567,7 @@ class DetectionWorker(QtCore.QThread):
 
     # --- tracking state ---
     def _on_target_lost(self, cfg: DetectionSettings) -> None:
+        self._aimer.reset_carry()
         self._last_target_pos = None
         if cfg.prediction_enabled:
             self._kalman.handle_target_loss()
@@ -552,6 +575,7 @@ class DetectionWorker(QtCore.QThread):
         self._last_aim_pos = None
 
     def _reset_tracking(self) -> None:
+        self._aimer.reset_carry()
         self._last_target_pos = None
         self._smoothed_velocity = None
         self._last_aim_pos = None
