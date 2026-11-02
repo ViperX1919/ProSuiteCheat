@@ -62,6 +62,10 @@ class SmoothAimer:
         # so slow approaches still arrive instead of stalling short.
         self._carry_x = 0.0
         self._carry_y = 0.0
+        # Counts actually dispatched since the last take_sent(), so the
+        # tracker knows how much of the view's motion was our own doing.
+        self._sent_x = 0
+        self._sent_y = 0
         self._extra = ctypes.c_ulong(0)
         self._extra_ptr = ctypes.pointer(self._extra)
         self._event = Input(ctypes.c_ulong(INPUT_MOUSE), _InputUnion())
@@ -86,6 +90,14 @@ class SmoothAimer:
         self._carry_y = total_y - out_y
         if out_x or out_y:
             self._dispatch(out_x, out_y, MOUSEEVENTF_MOVE)
+            self._sent_x += out_x
+            self._sent_y += out_y
+
+    def take_sent(self) -> tuple[int, int]:
+        """Counts sent since the last call (detection thread only)."""
+        sent = (self._sent_x, self._sent_y)
+        self._sent_x = self._sent_y = 0
+        return sent
 
     def reset_carry(self) -> None:
         """Drop leftover sub-pixels, e.g. when the target changes or is lost."""

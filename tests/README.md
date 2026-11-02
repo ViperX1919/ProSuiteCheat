@@ -1,6 +1,6 @@
 # Tests
 
-Four headless suites, ~70 checks. No test framework and no real mouse input:
+Seven headless suites, ~100 checks. No test framework and no real mouse input:
 each script prints `PASS`/`FAIL`/`SKIP` per check and exits non-zero if
 anything failed, so they work from any shell or a CI step.
 
@@ -9,6 +9,9 @@ python tests/smoke.py           # config schema, hotkeys, themes, kalman, ESP
 python tests/test_arraylist.py  # ordering, animation, move mode
 python tests/test_trigger.py    # triggerbot delay rate limiting
 python tests/test_radar.py      # bearing, distance, filtering
+python tests/test_prediction.py # kalman, lead, frame-rate independence
+python tests/test_egomotion.py  # world-frame tracking while the aim pins the target
+python tests/test_loop.py       # closed loop: no ringing when moves lag
 ```
 
 Run them all:

@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import constants as C
+from ..core import capture
 from ..core.aimer import SmoothAimer
 from ..core.detection import DetectionWorker
 from ..core.input_listener import InputListener
@@ -134,6 +135,13 @@ class MainWindow(QWidget):
             self.input_listener.start()
         else:
             log.warning("Hotkeys disabled: no global input hooks installed")
+
+        # Windows can be dragged at any time; keep the detector's idea of
+        # where they are fresh without re-pushing every setting each tick.
+        self._rect_timer = QtCore.QTimer(self)
+        self._rect_timer.setInterval(300)
+        self._rect_timer.timeout.connect(self._sync_own_rects)
+        self._rect_timer.start()
 
         self.worker.result_ready.connect(self._on_result, Qt.QueuedConnection)
         self.worker.start()
@@ -261,7 +269,7 @@ class MainWindow(QWidget):
         )
 
         predict_factor = self._register(
-            W.make_slider("Prediction Factor", 1, 50, 5, value_format=W.tenths)
+            W.make_slider("Prediction Lead", 1, 50, 5, value_format=W.tens_of_ms)
         )
         self.prediction_slider = predict_factor.input
 
@@ -316,8 +324,13 @@ class MainWindow(QWidget):
         trigger_section = CollapsibleSection(
             trigger_toggle.widget, header_controls=[trigger_key.widget]
         )
+        trigger_reaction = self._register(
+            W.make_slider("Reaction Delay (ms)", 0, 500, 0)
+        )
+        self.trigger_reaction_slider = trigger_reaction.input
+        trigger_section.add_widget(trigger_reaction.widget)
         trigger_delay = self._register(
-            W.make_slider("Trigger Delay (ms)", 0, 500, 0)
+            W.make_slider("Repeat Interval (ms)", 0, 1000, 0)
         )
         self.trigger_delay_slider = trigger_delay.input
         trigger_section.add_widget(trigger_delay.widget)
@@ -450,7 +463,15 @@ class MainWindow(QWidget):
         theme_select = self._register(W.make_dropdown("UI Theme", C.THEME_NAMES))
         self.theme_dropdown = theme_select.input
         self.reset_ui_button = QPushButton("Reset UI to Default")
+        capture_select = self._register(
+            W.make_dropdown("Capture Source", [capture.SCREEN_LABEL])
+        )
+        self.capture_dropdown = capture_select.input
+        self.capture_dropdown.setMinimumWidth(220)
 
+        page.add_heading("Capture")
+        page.add_widget(capture_select.widget)
+        page.add_separator()
         page.add_heading("Config")
         page.add_widget(self.save_button)
         page.add_widget(self.load_button)
@@ -552,15 +573,18 @@ class MainWindow(QWidget):
             self.y_offset_slider,
             self.prediction_slider,
             self.trigger_delay_slider,
+            self.trigger_reaction_slider,
         ):
             slider.valueChanged.connect(self.push_settings)
         for dropdown in (
             self.priority_dropdown,
             self.aim_position_dropdown,
             self.esp_mode_dropdown,
+            self.capture_dropdown,
         ):
             dropdown.currentTextChanged.connect(self.push_settings)
-        for name in ("aim", "prediction", "triggerbot", "esp", "radar"):
+        self.capture_dropdown.popupAboutToShow.connect(self.refresh_capture_windows)
+        for name in ("aim", "prediction", "triggerbot", "esp", "radar", "show_fov", "tracers"):
             self.features[name].toggle.toggled.connect(self.push_settings)
 
     # ------------------------------------------------------------------
@@ -570,6 +594,10 @@ class MainWindow(QWidget):
         """Send the current UI state to the detection thread."""
         self.worker.update_settings(
             screen_center=(self.screen_center.x(), self.screen_center.y()),
+            capture_window=self.capture_window(),
+            ignore_rects=self._own_rects(),
+            fov_ring=self.features["show_fov"].is_on(),
+            esp_tracers=self.features["tracers"].is_on(),
             fov=self.fov_slider.value(),
             detection_rgb=(
                 self.detection_color.red(),
@@ -588,10 +616,53 @@ class MainWindow(QWidget):
             prediction_factor=self.prediction_slider.value(),
             trigger_enabled=self.features["triggerbot"].is_on(),
             trigger_delay=self.trigger_delay_slider.value(),
+            trigger_reaction=self.trigger_reaction_slider.value(),
             esp_enabled=self.features["esp"].is_on(),
             esp_mode=self.esp_mode_dropdown.currentText(),
             radar_enabled=self.features["radar"].is_on(),
         )
+
+    # --- our own windows, for the detector to ignore on a screen grab ---
+    def _own_rects(self) -> tuple[tuple[int, int, int, int], ...]:
+        """Screen rectangles of our small windows (not the full-screen overlays)."""
+        rects = []
+        for widget in (self, self.array_list, self.radar_widget):
+            if widget.isVisible() and not widget.isMinimized():
+                g = widget.frameGeometry()
+                rects.append((g.left(), g.top(), g.right(), g.bottom()))
+        return tuple(rects)
+
+    def _sync_own_rects(self) -> None:
+        if self._own_rects() != self.worker.settings.ignore_rects:
+            self.push_settings()
+
+    # --- capture source ---
+    def capture_window(self) -> str:
+        """Title of the window being captured, or "" for the whole screen."""
+        text = self.capture_dropdown.currentText()
+        return capture.SCREEN if text == capture.SCREEN_LABEL else text
+
+    def set_capture_window(self, title: str) -> None:
+        combo = self.capture_dropdown
+        label = title or capture.SCREEN_LABEL
+        if combo.findText(label) < 0:
+            # A saved window that isn't open right now stays selectable;
+            # detection simply waits for it to appear.
+            combo.addItem(label)
+        combo.setCurrentText(label)
+
+    def refresh_capture_windows(self) -> None:
+        """Repopulate the dropdown with the windows open right now."""
+        combo = self.capture_dropdown
+        current = combo.currentText()
+        titles = [title for _hwnd, title in capture.list_windows()]
+        if current != capture.SCREEN_LABEL and current not in titles:
+            titles.append(current)
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItems([capture.SCREEN_LABEL, *titles])
+        combo.setCurrentText(current)
+        combo.blockSignals(False)
 
     def _on_result(self, result) -> None:
         """Paint the latest detection frame. Runs on the GUI thread."""

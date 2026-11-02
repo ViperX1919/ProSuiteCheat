@@ -10,3 +10,6 @@ build/
 
 # Built executables and runtime logs (publish builds via GitHub Releases)
 dist/
+
+# Local dev launcher
+run_dev.bat

@@ -15,11 +15,13 @@ import time
 from dataclasses import dataclass, replace
 
 import cv2
-import mss
 import numpy as np
 from PySide6 import QtCore
 
+from . import capture
 from .aimer import SmoothAimer
+from .capture import ScreenSource, WindowSource
+from .egomotion import EgoMotion
 from .kalman import KalmanFilter
 
 log = logging.getLogger(__name__)
@@ -33,6 +35,25 @@ TRIGGER_REGION = 4
 #: Saturation/value floor for a pixel to count as the target colour.
 SATURATION_FLOOR = 100
 VALUE_FLOOR = 100
+
+#: A measurement further than this from where the track says the target
+#: should be is a different target, not a fast one: start a new track.
+PREDICTION_GATE_PX = 120.0
+#: How long a track survives with no detection (blob flicker) before reset.
+PREDICTION_COAST_S = 0.25
+#: Below this speed (px/s) the target is treated as stationary: no lead.
+PREDICTION_MIN_SPEED = 40.0
+#: Bounds on the time step fed to the filter, in seconds.
+MIN_DT, MAX_DT = 1.0 / 240.0, 0.25
+#: The lead never exceeds this fraction of the FOV, nor MAX_LEAD_PX: a bad
+#: velocity reading should nudge the aim, not fling it across the screen.
+MAX_LEAD_FRACTION = 0.35
+MAX_LEAD_PX = 160.0
+
+#: Our own drawing that lands inside the captured frame (screen mode only).
+FOV_RING_WIDTH = 10
+BOX_MARGIN = 14
+TRACER_WIDTH = 10
 
 # Radar distance is inferred from how large a target appears. These are the
 # apparent linear sizes, in screen pixels, that read as point-blank and as far
@@ -56,6 +77,8 @@ class DetectionSettings:
     """Immutable snapshot of everything the worker needs for one frame."""
 
     screen_center: tuple[int, int] = (0, 0)
+    #: Title of the window to capture, or "" for the whole screen.
+    capture_window: str = capture.SCREEN
     fov: int = 200
     detection_rgb: tuple[int, int, int] = (255, 0, 0)
     tolerance: int = 80
@@ -69,15 +92,24 @@ class DetectionSettings:
     speed: int = 10
 
     prediction_enabled: bool = False
+    #: Lead time in units of 10 ms: the aim point is placed where the target
+    #: is expected to be this far in the future. 5 means 50 ms.
     prediction_factor: int = 5
 
     trigger_enabled: bool = False
     #: Minimum gap between triggerbot shots, in milliseconds. 0 fires as fast
     #: as the capture loop allows, which is roughly 100 clicks a second.
     trigger_delay: int = 0
+    #: How long the colour must stay under the crosshair before the first
+    #: shot, in milliseconds. Fixed, not random: it is a debounce.
+    trigger_reaction: int = 0
     esp_enabled: bool = False
     esp_mode: str = "Box"
     radar_enabled: bool = False
+    #: Screen rectangles (left, top, right, bottom) of our own windows.
+    ignore_rects: tuple[tuple[int, int, int, int], ...] = ()
+    fov_ring: bool = False
+    esp_tracers: bool = False
 
     @property
     def aiming(self) -> bool:
@@ -148,12 +180,25 @@ class DetectionWorker(QtCore.QThread):
         self._running = False
 
         # Per-target tracking state, reset whenever the target is lost.
-        self._last_target_pos: np.ndarray | None = None
-        self._smoothed_velocity: np.ndarray | None = None
-        self._last_aim_pos: tuple[float, float] | None = None
+        self._last_update: float | None = None
+        self._lost_since: float | None = None
+        self._ego = EgoMotion()
+        #: Total scene shift since tracking began. A target's *world* position
+        #: is its screen position minus this, so camera motion drops out.
+        self._camera = np.zeros(2)
+        self._ego_source = "none"
+
+        #: Screen rect of the ESP box we drew last frame, so it can be masked.
+        self._last_box: tuple[int, int, int, int] | None = None
+
+        self._source: ScreenSource | WindowSource | None = None
+        self._source_key: str | None = None
+        self._next_source_try = 0.0
 
         #: perf_counter timestamp of the last triggerbot click, for the delay.
         self._last_trigger = float("-inf")
+        #: When the colour first appeared under the crosshair, or None.
+        self._trigger_since: float | None = None
 
         # Cached HSV threshold, recomputed only when colour/tolerance change.
         self._hsv_cache_key: tuple[tuple[int, int, int], int] | None = None
@@ -179,14 +224,11 @@ class DetectionWorker(QtCore.QThread):
         self._running = True
         frame_budget = 1.0 / self.TARGET_FPS
 
-        # mss binds to the thread that creates it, so it must live in here.
-        # Creating it once instead of per-frame is the single biggest win over
-        # the original implementation.
-        with mss.mss() as sct:
+        try:
             while self._running:
                 started = time.perf_counter()
                 try:
-                    self._process_frame(sct, self.settings)
+                    self._process_frame(self.settings)
                 except Exception:
                     log.exception("Detection frame failed")
                     time.sleep(0.1)
@@ -194,14 +236,82 @@ class DetectionWorker(QtCore.QThread):
                 elapsed = time.perf_counter() - started
                 if elapsed < frame_budget:
                     time.sleep(frame_budget - elapsed)
+        finally:
+            self._close_source()
 
-    def _process_frame(self, sct: mss.base.MSSBase, cfg: DetectionSettings) -> None:
+    # --- capture source ---
+    def _close_source(self) -> None:
+        if self._source is not None:
+            self._source.close()
+        self._source = None
+        self._source_key = None
+
+    def _ensure_source(self, cfg: DetectionSettings):
+        """Open (or switch) the capture source; None while it's unavailable.
+
+        A window that can't be found pauses detection rather than falling back
+        to the whole screen, which would quietly change what is being scanned.
+        """
+        wanted = cfg.capture_window
+        if self._source is not None and self._source_key == wanted:
+            if isinstance(self._source, WindowSource) and not self._source.alive:
+                self._close_source()  # window closed; look for it again
+            else:
+                return self._source
+
+        now = time.perf_counter()
+        if now < self._next_source_try:
+            return None
+        self._close_source()
+        self._reset_tracking()
+
+        source = ScreenSource() if wanted == capture.SCREEN else WindowSource(wanted)
+        try:
+            # mss binds to this thread, which is why opening happens here.
+            source.open()
+        except Exception as error:
+            log.warning("Capture source unavailable (%s)", error)
+            self._next_source_try = now + 1.0
+            return None
+
+        self._source, self._source_key = source, wanted
+        return source
+
+    def _process_frame(self, cfg: DetectionSettings) -> None:
         if not cfg.should_scan:
             self._reset_tracking()
+            self._aimer.reset_carry()
+            self._aimer.take_sent()
             self.result_ready.emit(DetectionResult())
             return
 
-        region, mask = self._capture_mask(sct, cfg)
+        source = self._ensure_source(cfg)
+        if source is None:
+            self.result_ready.emit(DetectionResult())
+            return
+
+        cx, cy = cfg.screen_center
+        grabbed = source.grab(cx, cy, cfg.fov)
+        if grabbed is None:  # window produced no new frame
+            return
+        region, bgr, stamp = grabbed
+        mask = self._colour_mask(bgr, cfg)
+
+        # On a full-screen grab our own overlays are in the picture. Treat
+        # them as not-there for both detection and the ego-motion estimate.
+        ignore = None
+        if source.sees_overlays:
+            ignore = self._ignore_mask(region, bgr.shape[:2], cfg)
+            if ignore is not None:
+                mask = cv2.bitwise_and(mask, cv2.bitwise_not(ignore))
+
+        sent = self._aimer.take_sent()
+        if cfg.prediction_enabled or cfg.aiming:
+            blanked = mask if ignore is None else cv2.bitwise_or(mask, ignore)
+            shift, self._ego_source = self._ego.estimate(bgr, blanked, sent)
+            self._camera += shift
+        else:
+            self._ego.reset()
 
         if cfg.trigger_enabled and cfg.aim_key_held:
             self._maybe_trigger(mask, cfg)
@@ -219,34 +329,62 @@ class DetectionWorker(QtCore.QThread):
             self.result_ready.emit(DetectionResult(radar_targets=radar))
             return
 
-        self._emit_target(contours, centroids, region, mask, radar, cfg)
+        self._emit_target(contours, centroids, region, mask, radar, cfg, stamp)
 
-    # --- capture ---
-    def _capture_mask(
-        self, sct: mss.base.MSSBase, cfg: DetectionSettings
-    ) -> tuple[dict, np.ndarray]:
-        cx, cy = cfg.screen_center
-        fov = cfg.fov
-        region = {
-            "left": cx - fov,
-            "top": cy - fov,
-            "width": 2 * fov,
-            "height": 2 * fov,
-        }
+    # --- our own drawing, when the capture can see it ---
+    def _ignore_mask(
+        self, region: dict, shape: tuple[int, int], cfg: DetectionSettings
+    ) -> np.ndarray | None:
+        """Mask of pixels that are our overlays rather than the scene."""
+        left, top = region["left"], region["top"]
+        mask = np.zeros(shape, np.uint8)
 
-        shot = sct.grab(region)
-        # .raw is BGRA with no Python-level conversion, unlike mss's .rgb.
-        frame = np.frombuffer(shot.raw, dtype=np.uint8).reshape(
-            shot.height, shot.width, 4
-        )
-        bgr = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+        box = None
+        if cfg.esp_enabled and self._last_box is not None:
+            box = (
+                self._last_box[0] - left,
+                self._last_box[1] - top,
+                self._last_box[2] - left,
+                self._last_box[3] - top,
+            )
+
+        # Last frame's ESP box: only the band *outside* it. Masking the
+        # inside would eat the target's own edge pixels every frame and the
+        # box would shrink toward nothing.
+        if box is not None:
+            l, t, r, b = box
+            cv2.rectangle(
+                mask, (l - BOX_MARGIN, t - BOX_MARGIN), (r + BOX_MARGIN, b + BOX_MARGIN), 255, -1
+            )
+            cv2.rectangle(mask, (l, t), (r, b), 0, -1)
+
+            if cfg.esp_tracers:
+                cx, cy = cfg.screen_center
+                tip = ((l + r) // 2, (t + b) // 2)
+                line = np.zeros(shape, np.uint8)
+                cv2.line(line, (cx - left, 2 * cy - top), tip, 255, TRACER_WIDTH)
+                # Stop at the box so the line never cuts through the target.
+                cv2.rectangle(
+                    line, (l - BOX_MARGIN, t - BOX_MARGIN), (r + BOX_MARGIN, b + BOX_MARGIN), 0, -1
+                )
+                mask = cv2.bitwise_or(mask, line)
+
+        if cfg.fov_ring:
+            cv2.circle(mask, (cfg.fov, cfg.fov), cfg.fov, 255, FOV_RING_WIDTH)
+
+        for rl, rt, rr, rb in cfg.ignore_rects:
+            cv2.rectangle(mask, (rl - left, rt - top), (rr - left, rb - top), 255, -1)
+
+        return mask if mask.any() else None
+
+    # --- colour filter ---
+    def _colour_mask(self, bgr: np.ndarray, cfg: DetectionSettings) -> np.ndarray:
         hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-
         mask = None
         for lower, upper in self._hsv_ranges(cfg):
             part = cv2.inRange(hsv, lower, upper)
             mask = part if mask is None else cv2.bitwise_or(mask, part)
-        return region, mask
+        return mask
 
     def _hsv_ranges(
         self, cfg: DetectionSettings
@@ -285,19 +423,28 @@ class DetectionWorker(QtCore.QThread):
     def _maybe_trigger(self, mask: np.ndarray, cfg: DetectionSettings) -> None:
         """Click if the target colour sits under the crosshair.
 
-        Shots are spaced by at least ``cfg.trigger_delay`` milliseconds. The
-        gap is fixed, not randomised - this only limits the rate.
+        The colour has to stay there for ``cfg.trigger_reaction`` ms before the
+        first shot, then shots are spaced by at least ``cfg.trigger_delay`` ms.
+        Both are fixed values, not randomised - they only limit the rate.
         """
         now = time.perf_counter()
-        if now - self._last_trigger < cfg.trigger_delay / 1000.0:
-            return
-
         centre = cfg.fov
         half = TRIGGER_REGION // 2
         patch = mask[centre - half : centre + half, centre - half : centre + half]
-        if patch.any():
-            self._aimer.click()
-            self._last_trigger = now
+
+        if not patch.any():
+            self._trigger_since = None
+            return
+        if self._trigger_since is None:
+            self._trigger_since = now
+
+        if now - self._trigger_since < cfg.trigger_reaction / 1000.0:
+            return
+        if now - self._last_trigger < cfg.trigger_delay / 1000.0:
+            return
+
+        self._aimer.click()
+        self._last_trigger = now
 
     # --- target selection ---
     def _find_targets(self, mask: np.ndarray) -> list[dict]:
@@ -442,6 +589,7 @@ class DetectionWorker(QtCore.QThread):
         mask: np.ndarray,
         radar: tuple[RadarTarget, ...],
         cfg: DetectionSettings,
+        stamp: float | None = None,
     ) -> None:
         fov = cfg.fov
         if cfg.priority == "Proximity":
@@ -461,23 +609,32 @@ class DetectionWorker(QtCore.QThread):
             aim_y += cfg.y_offset
 
         screen_pos = (int(region["left"] + cx), int(region["top"] + cy))
+        self._last_box = (
+            region["left"] + x,
+            region["top"] + y,
+            region["left"] + x + w,
+            region["top"] + y + h,
+        )
         velocity_lines: tuple = ()
         prediction_label = None
 
         if cfg.prediction_enabled:
             aim_x, aim_y, velocity_lines, prediction_label = self._apply_prediction(
-                np.array([cx, cy]), screen_pos, region, cfg
+                np.array([aim_x, aim_y]), np.array([cx, cy]), screen_pos, region, cfg, stamp
             )
         else:
-            self._smoothed_velocity = None
-            self._last_aim_pos = None
-
-        self._last_target_pos = np.array([cx, cy])
+            self._reset_tracking()
 
         if cfg.aiming:
             self._aimer.smoothness = cfg.smoothness
             self._aimer.speed = cfg.speed
-            self._aimer.move(aim_x - fov, aim_y - fov)
+            # Moves we already sent haven't reached the screen yet (input
+            # lag), so the offset we can see overstates what's left to do.
+            # Aim at where the target will be once they land, or each frame
+            # re-orders the same correction and the aim overshoots and snaps
+            # back.
+            pending = self._ego.pending_shift()
+            self._aimer.move(aim_x - fov + pending[0], aim_y - fov + pending[1])
 
         # The mask is only worth shipping across threads for Pixel ESP, which
         # is the one mode that draws every matching pixel rather than a box.
@@ -501,86 +658,97 @@ class DetectionWorker(QtCore.QThread):
     # --- prediction ---
     def _apply_prediction(
         self,
-        current: np.ndarray,
+        aim_point: np.ndarray,
+        centroid: np.ndarray,
         screen_pos: tuple[int, int],
         region: dict,
         cfg: DetectionSettings,
+        timestamp: float | None = None,
     ):
-        """Blend a velocity-extrapolated position into the aim point."""
-        self._kalman.update(current)
-        velocity = self._kalman.get_velocity()
+        """Lead the aim point by the target's world velocity times a lead time.
+
+        The filter tracks the blob centroid in *world* coordinates - screen
+        position minus the camera's accumulated motion - so it measures how
+        the target moves through the scene, not how it moves across a screen
+        that the aimer is itself dragging along. A target the aim holds dead
+        centre therefore still has its true velocity, and still gets a lead.
+
+        The centroid is tracked rather than the aim point so a Head or Y
+        offset doesn't masquerade as motion. All smoothing is the Kalman
+        filter's job; the aimer's damping does the rest.
+        """
+        now = time.perf_counter() if timestamp is None else timestamp
+        dt = 1.0 / 60.0
+        if self._last_update is not None:
+            dt = min(max(now - self._last_update, MIN_DT), MAX_DT)
+        self._last_update = now
+        self._lost_since = None
+
+        kalman = self._kalman
+        world = centroid - self._camera
+        if kalman.initialized:
+            expected = kalman.get_position() + kalman.get_velocity() * dt
+            if float(np.linalg.norm(world - expected)) > PREDICTION_GATE_PX:
+                kalman.reset()
+        # The faster the view moved, the less the camera subtraction can be
+        # trusted - which is exactly when the aimer is swinging hardest, so
+        # leaning on momentum then is what keeps the loop from ringing.
+        kalman.update(world, dt, extra_sigma=self._ego.uncertainty)
+
+        velocity = kalman.get_velocity()
         speed = float(np.linalg.norm(velocity))
-        confidence = self._kalman.get_prediction_confidence()
+        confidence = kalman.get_prediction_confidence()
 
-        scaled_factor = 0.0
-        predicted = current
+        lead = np.zeros(2)
+        if confidence > 0.0 and speed > PREDICTION_MIN_SPEED:
+            # The slider is extra lead on top of the system's own delay: a
+            # command sent now lands `lag` frames from now, and the target
+            # keeps moving until it does.
+            lead_seconds = cfg.prediction_factor * 0.010 + self._ego.lag * dt
+            lead = velocity * lead_seconds * confidence
+            reach = float(np.linalg.norm(lead))
+            cap = min(MAX_LEAD_PX, MAX_LEAD_FRACTION * cfg.fov)
+            if reach > cap:
+                lead *= cap / reach
 
-        if confidence > 0.1 and speed > 1.0:
-            scaled_factor = (cfg.prediction_factor / 10.0) * confidence
-
-            if self._smoothed_velocity is None:
-                self._smoothed_velocity = velocity.copy()
-            else:
-                self._smoothed_velocity = self._smoothed_velocity * 0.7 + velocity * 0.3
-
-            # Extrapolate along the smoothed heading only while the raw and
-            # smoothed directions agree; otherwise trust the instantaneous one.
-            heading = velocity / (speed + 1e-6)
-            smoothed_heading = self._smoothed_velocity / (
-                np.linalg.norm(self._smoothed_velocity) + 1e-6
-            )
-            if float(np.dot(heading, smoothed_heading)) > 0.5:
-                predicted = current + self._smoothed_velocity * scaled_factor
-            else:
-                predicted = current + velocity * scaled_factor
-
-        elif speed > 1.0 and self._last_target_pos is not None:
-            scaled_factor = cfg.prediction_factor / 20.0
-            predicted = current + (current - self._last_target_pos) * scaled_factor
-
-        predicted = np.clip(predicted, 0, 2 * cfg.fov)
+        limit = 2 * cfg.fov
+        aim = np.clip(aim_point + lead, 0, limit)
+        tip = np.clip(centroid + lead, 0, limit)
 
         lines = (
             (
                 screen_pos,
-                (
-                    int(region["left"] + predicted[0]),
-                    int(region["top"] + predicted[1]),
-                ),
-                speed,
+                (int(region["left"] + tip[0]), int(region["top"] + tip[1])),
+                # The overlay's styling is tuned for pixels per frame.
+                speed / 60.0,
             ),
         )
 
-        blend = min(0.5, scaled_factor * 0.05)
-        raw_aim = current * (1.0 - blend) + predicted * blend
-
-        if self._last_aim_pos is not None:
-            aim_x = self._last_aim_pos[0] * 0.8 + raw_aim[0] * 0.2
-            aim_y = self._last_aim_pos[1] * 0.8 + raw_aim[1] * 0.2
-        else:
-            aim_x, aim_y = float(raw_aim[0]), float(raw_aim[1])
-
-        self._last_aim_pos = (aim_x, aim_y)
-
-        label = f"Prediction [{blend:.2f}]" if speed > 1.0 else "Prediction"
-        return aim_x, aim_y, lines, label
+        lead_ms = float(np.linalg.norm(lead) / max(speed, 1e-6)) * 1000.0
+        tag = {"img": "img", "cnt": "cnt"}.get(self._ego_source, "no ego")
+        label = f"Prediction [{lead_ms:.0f}ms {tag}]" if lead.any() else "Prediction"
+        return float(aim[0]), float(aim[1]), lines, label
 
     # --- tracking state ---
     def _on_target_lost(self, cfg: DetectionSettings) -> None:
         self._aimer.reset_carry()
-        self._last_target_pos = None
-        if cfg.prediction_enabled:
-            self._kalman.handle_target_loss()
-        self._smoothed_velocity = None
-        self._last_aim_pos = None
+        self._last_box = None
+        # Coast through a brief dropout so velocity survives a flickering
+        # blob, but don't carry a stale track onto a later, different target.
+        now = time.perf_counter()
+        if self._lost_since is None:
+            self._lost_since = now
+        elif now - self._lost_since > PREDICTION_COAST_S:
+            self._reset_tracking()
 
     def _reset_tracking(self) -> None:
-        self._aimer.reset_carry()
-        self._last_target_pos = None
-        self._smoothed_velocity = None
-        self._last_aim_pos = None
+        self._kalman.reset()
+        self._ego.reset()
+        self._camera = np.zeros(2)
+        self._last_box = None
+        self._last_update = None
+        self._lost_since = None
 
     def reset_prediction(self) -> None:
         """Clear all tracking state - called when the aimbot is toggled."""
-        self._kalman.reset()
         self._reset_tracking()

@@ -255,6 +255,10 @@ class AnimatedComboBox(QComboBox):
 
     DURATION = 110
 
+    #: Emitted just before the popup opens, so a list that changes over time
+    #: (like the open windows) can be refreshed while the user is looking.
+    popupAboutToShow = QtCore.Signal()
+
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self._fade: QPropertyAnimation | None = None
@@ -271,6 +275,7 @@ class AnimatedComboBox(QComboBox):
 
     def showPopup(self) -> None:
         self._closing = False
+        self.popupAboutToShow.emit()
         super().showPopup()
         popup = self._popup_window()
         if popup is None:
@@ -398,6 +403,11 @@ def make_keybind_button(default_text: str) -> Control:
 def signed(value: int) -> str:
     """Render an offset with an explicit sign, e.g. ``+12``."""
     return f"{value:+}"
+
+
+def tens_of_ms(value: int) -> str:
+    """Render a slider stored in units of 10 ms, e.g. ``5`` -> ``50 ms``."""
+    return f"{value * 10} ms"
 
 
 def tenths(value: int) -> str:

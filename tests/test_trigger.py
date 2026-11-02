@@ -73,6 +73,51 @@ solid = np.full((40, 40), 255, dtype=np.uint8)
 worker._maybe_trigger(solid, cfg)
 check("fires immediately once colour appears", len(aimer.clicks) == 1, f"{len(aimer.clicks)}")
 
+# --- reaction delay: a fixed debounce before the first shot ---
+def first_shot_latency(reaction_ms, repeat_ms=0, fps=240):
+    aimer = FakeAimer()
+    worker = DetectionWorker(aimer)
+    cfg = DetectionSettings(fov=20, trigger_enabled=True, trigger_delay=repeat_ms,
+                            trigger_reaction=reaction_ms)
+    solid = np.full((40, 40), 255, dtype=np.uint8)
+    start = time.perf_counter()
+    while not aimer.clicks and time.perf_counter() - start < 1.0:
+        worker._maybe_trigger(solid, cfg)
+        time.sleep(1 / fps)
+    return (aimer.clicks[0] - start) if aimer.clicks else None
+
+lat = [first_shot_latency(120) for _ in range(3)]
+check("first shot waits for the reaction delay", all(0.115 <= l <= 0.145 for l in lat),
+      " ".join(f"{l * 1000:.0f}ms" for l in lat))
+check("reaction delay is fixed, not randomised", max(lat) - min(lat) < 0.02,
+      f"spread {(max(lat) - min(lat)) * 1000:.1f}ms")
+
+aimer = FakeAimer()
+worker = DetectionWorker(aimer)
+cfg = DetectionSettings(fov=20, trigger_enabled=True, trigger_reaction=100)
+solid = np.full((40, 40), 255, dtype=np.uint8)
+gone = np.zeros((40, 40), dtype=np.uint8)
+t0 = time.perf_counter()
+while time.perf_counter() - t0 < 0.08:      # colour present, not long enough
+    worker._maybe_trigger(solid, cfg); time.sleep(0.004)
+worker._maybe_trigger(gone, cfg)            # colour leaves the crosshair
+t1 = time.perf_counter()
+while time.perf_counter() - t1 < 0.08:      # back again - timer must restart
+    worker._maybe_trigger(solid, cfg); time.sleep(0.004)
+check("colour leaving the crosshair restarts the reaction timer", not aimer.clicks,
+      f"{len(aimer.clicks)} clicks")
+
+# Repeat interval still applies after the first shot.
+aimer = FakeAimer()
+worker = DetectionWorker(aimer)
+cfg = DetectionSettings(fov=20, trigger_enabled=True, trigger_reaction=50, trigger_delay=200)
+end = time.perf_counter() + 0.9
+while time.perf_counter() < end:
+    worker._maybe_trigger(solid, cfg); time.sleep(0.004)
+gaps = [b - a for a, b in zip(aimer.clicks, aimer.clicks[1:])]
+check("fast first shot then spaced repeats", len(aimer.clicks) in (4, 5) and all(g >= 0.199 for g in gaps),
+      f"{len(aimer.clicks)} clicks, min gap {min(gaps) * 1000:.0f}ms")
+
 print()
 print("FAILURES:", failures if failures else "none")
 sys.exit(1 if failures else 0)
