@@ -164,6 +164,8 @@ class FrameStats:
     lag: int = 0
     #: "Screen" or the captured window's title.
     source: str = "Screen"
+    #: False while every module is off and the worker is just idling.
+    scanning: bool = False
 
 
 @dataclass(frozen=True)
@@ -309,6 +311,7 @@ class DetectionWorker(QtCore.QThread):
             ego=self._ego_source,
             lag=self._ego.lag,
             source=cfg.capture_window or "Screen",
+            scanning=cfg.should_scan,
         )
 
     def _emit(self, result: DetectionResult) -> None:

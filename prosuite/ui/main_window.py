@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QColorDialog,
     QHBoxLayout,
     QPushButton,
+    QVBoxLayout,
     QWidget,
 )
 
@@ -23,10 +24,14 @@ from ..core.detection import DetectionWorker
 from ..core.input_listener import InputListener
 from ..paths import resource_path
 from . import widgets as W
+from .accent import AccentSwatches
 from .arraylist import ArrayListWidget
 from .nav import IconNav
+from .picker import ScreenPicker
+from .preview import MaskPreview
 from .overlays import FOVOverlay, PredictionAimOverlay, RadarWidget, RenderOverlay
 from .sections import CheatMenuPage, CollapsibleSection, make_separator
+from .status import StatusStrip
 from .widgets import AnimatedStackedWidget, Control, ToggleSwitch
 
 log = logging.getLogger(__name__)
@@ -124,9 +129,17 @@ class MainWindow(QWidget):
         layout.setSpacing(0)
         layout.setContentsMargins(0, 0, 0, 0)
 
+        self.status = StatusStrip()
         self._build_pages()
+
+        column = QVBoxLayout()
+        column.setSpacing(8)
+        column.setContentsMargins(0, 0, 20, 14)
+        column.addWidget(self.stack, 1)
+        column.addWidget(self.status)
+
         layout.addWidget(self.nav)
-        layout.addWidget(self.stack, 1)
+        layout.addLayout(column, 1)
 
         self._connect()
         self.apply_theme(C.DEFAULT_THEME)
@@ -240,6 +253,12 @@ class MainWindow(QWidget):
 
         det_color = self._register(W.make_color_picker("Detection Color"))
         self.detection_color_button = det_color.input
+        self.eyedropper_button = QPushButton("Pick")
+        self.eyedropper_button.setFixedHeight(30)
+        self.eyedropper_button.setCursor(Qt.PointingHandCursor)
+        self.eyedropper_button.setToolTip("Sample the target colour from the screen")
+        self.eyedropper_button.setStyleSheet(C.keybind_button_style())
+        det_color.widget.layout().insertWidget(1, self.eyedropper_button)
 
         priority = self._register(W.make_dropdown("Aim Priority", C.AIM_PRIORITIES))
         self.priority_dropdown = priority.input
@@ -343,6 +362,17 @@ class MainWindow(QWidget):
         trigger_section.add_widget(trigger_delay.widget)
         page.add_section(trigger_section)
         self.sections.append(trigger_section)
+
+        page.add_separator()
+        preview_toggle = self._register(
+            W.make_toggle("Live Detection Preview", self.theme_color)
+        )
+        self._add_feature(Feature(name="preview", toggle=preview_toggle.input))
+        preview_section = CollapsibleSection(preview_toggle.widget)
+        self.mask_preview = MaskPreview()
+        preview_section.add_widget(self.mask_preview)
+        page.add_section(preview_section)
+        self.sections.append(preview_section)
 
         self.stack.addWidget(page)
 
@@ -485,6 +515,8 @@ class MainWindow(QWidget):
         page.add_separator()
         page.add_heading("UI Customization")
         page.add_widget(theme_color.widget)
+        self.accent_swatches = AccentSwatches()
+        page.add_widget(self.accent_swatches)
         page.add_widget(theme_select.widget)
         page.add_widget(self.reset_ui_button)
 
@@ -568,6 +600,8 @@ class MainWindow(QWidget):
         self.theme_color_button.clicked.connect(self._pick_theme_color)
         self.theme_dropdown.currentTextChanged.connect(self.apply_theme)
         self.reset_ui_button.clicked.connect(self._reset_theme)
+        self.accent_swatches.chosen.connect(self._set_accent)
+        self.eyedropper_button.clicked.connect(self._start_eyedropper)
         self.save_button.clicked.connect(self._save_settings)
         self.load_button.clicked.connect(self._load_settings)
 
@@ -593,7 +627,7 @@ class MainWindow(QWidget):
         ):
             dropdown.currentTextChanged.connect(self.push_settings)
         self.capture_dropdown.popupAboutToShow.connect(self.refresh_capture_windows)
-        for name in ("aim", "prediction", "triggerbot", "esp", "radar", "show_fov", "tracers"):
+        for name in ("aim", "prediction", "triggerbot", "esp", "radar", "show_fov", "tracers", "preview"):
             self.features[name].toggle.toggled.connect(self.push_settings)
 
     # ------------------------------------------------------------------
@@ -628,6 +662,7 @@ class MainWindow(QWidget):
             trigger_enabled=self.features["triggerbot"].is_on(),
             trigger_delay=self.trigger_delay_slider.value(),
             trigger_reaction=self.trigger_reaction_slider.value(),
+            preview_enabled=self.features["preview"].is_on(),
             esp_enabled=self.features["esp"].is_on(),
             esp_mode=self.esp_mode_dropdown.currentText(),
             radar_enabled=self.features["radar"].is_on(),
@@ -677,6 +712,12 @@ class MainWindow(QWidget):
 
     def _on_result(self, result) -> None:
         """Paint the latest detection frame. Runs on the GUI thread."""
+        self.status.set_stats(result.stats, self.features["prediction"].is_on())
+        if self.features["preview"].is_on():
+            self.mask_preview.set_mask(result.preview)
+        elif self.mask_preview.lit:
+            self.mask_preview.set_mask(None)
+
         if self.features["esp"].is_on() and result.has_target:
             self.render_overlay.show_target(
                 result.bbox, result.offset, result.screen_pos, result.mask
@@ -838,6 +879,34 @@ class MainWindow(QWidget):
     # ------------------------------------------------------------------
     # Theming
     # ------------------------------------------------------------------
+    def _set_accent(self, colour: QColor) -> None:
+        self.theme_color = QColor(colour)
+        self.apply_theme(self.theme_dropdown.currentText())
+
+    def _start_eyedropper(self) -> None:
+        """Hide the window, freeze the desktop, and let the user click a colour."""
+        self._picker_was_visible = self.isVisible()
+        self.hide()
+        # Give the compositor a moment to drop our window from the screen.
+        QtCore.QTimer.singleShot(220, self._open_picker)
+
+    def _open_picker(self) -> None:
+        self._picker = ScreenPicker()
+        self._picker.picked.connect(self._on_color_sampled)
+        self._picker.cancelled.connect(self._restore_after_pick)
+        if not self._picker.start():
+            self._restore_after_pick()
+
+    def _on_color_sampled(self, colour: QColor) -> None:
+        self.set_detection_color(colour)
+        self._restore_after_pick()
+
+    def _restore_after_pick(self) -> None:
+        if getattr(self, "_picker_was_visible", True):
+            self.show()
+            self.raise_()
+            self.activateWindow()
+
     def _reset_theme(self) -> None:
         self.theme_color = QColor(C.ACCENT_RED)
         self.theme_dropdown.setCurrentText(C.DEFAULT_THEME)
@@ -868,6 +937,9 @@ class MainWindow(QWidget):
                 control.label.setStyleSheet(text_style)
 
         self.array_list.set_text_color(self.arraylist_color)
+        self.status.apply_theme(palette.content_box, palette.text, self.theme_color)
+        self.mask_preview.apply_theme(self.theme_color, palette.background, palette.text)
+        self.accent_swatches.set_current(self.theme_color)
 
     # ------------------------------------------------------------------
     # Persistence
