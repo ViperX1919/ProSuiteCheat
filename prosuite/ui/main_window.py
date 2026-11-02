@@ -336,6 +336,10 @@ class MainWindow(QWidget):
             W.make_slider("Noise Filter", 0, 4, 1, value_format=W.noise_text)
         )
         self.noise_slider = noise.input
+        shape = self._register(
+            W.make_slider("Shape Filter", 0, 10, 10, value_format=W.shape_text)
+        )
+        self.shape_slider = shape.input
         max_size = self._register(
             W.make_slider("Max Target Size", 5, 100, 50, value_format=W.percent)
         )
@@ -386,6 +390,7 @@ class MainWindow(QWidget):
             val_floor,
             shade,
             noise,
+            shape,
             max_size,
             confirm,
             smoothness,
@@ -776,6 +781,7 @@ class MainWindow(QWidget):
             self.val_floor_slider,
             self.shade_slider,
             self.noise_slider,
+            self.shape_slider,
             self.max_size_slider,
             self.confirm_slider,
             self.smoothness_slider,
@@ -819,6 +825,7 @@ class MainWindow(QWidget):
             val_floor=self.val_floor_slider.value(),
             shade_tolerance=self.shade_slider.value(),
             noise_filter=self.noise_slider.value(),
+            shape_filter=self.shape_slider.value(),
             max_size=self.max_size_slider.value(),
             confirm_frames=self.confirm_slider.value(),
             aim_enabled=self.features["aim"].is_on(),

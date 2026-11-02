@@ -460,6 +460,10 @@ def shade_text(value: int) -> str:
     return "Off" if value >= 255 else f"±{value}"
 
 
+def shape_text(value: int) -> str:
+    return "Off" if value <= 0 else str(value)
+
+
 def noise_text(value: int) -> str:
     return "Off" if value <= 0 else f"{2 * value + 1} px"
 

@@ -104,6 +104,9 @@ class DetectionSettings:
     shade_tolerance: int = 120
     #: Radius in pixels of the morphological open that removes speckle.
     noise_filter: int = 1
+    #: Strength 0-10 of the shape checks (thin, stripe-like or hollow blobs
+    #: are dropped). 0 turns them off, which thin outline targets need.
+    shape_filter: int = 10
     #: Blobs bigger than this percentage of the capture area are scenery.
     max_size: int = 50
     #: Frames a candidate must persist before it is treated as a target.
@@ -609,6 +612,12 @@ class DetectionWorker(QtCore.QThread):
         """
         cfg = cfg or DetectionSettings()
         max_area = mask.shape[0] * mask.shape[1] * cfg.max_size / 100.0
+        shape = max(0, min(10, cfg.shape_filter))
+        # Strength scales the limits: 10 is the full MAX_ASPECT / MIN_FILL,
+        # lower values allow thinner and emptier blobs, 0 allows anything.
+        max_aspect = MAX_ASPECT + (10 - shape) * 3.0
+        min_fill = MIN_FILL * shape / 10.0
+        min_side = 2.0 if shape >= 5 else 0.0
         contours, _ = cv2.findContours(
             mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
         )
@@ -616,23 +625,24 @@ class DetectionWorker(QtCore.QThread):
         blobs = []
         for contour in contours:
             moments = cv2.moments(contour)
-            if moments["m00"] <= 0:
-                continue
-            area = cv2.contourArea(contour)
+            if moments["m00"] > 0:
+                centre = (moments["m10"] / moments["m00"], moments["m01"] / moments["m00"])
+            else:  # a 1px line encloses no area; use its mean point
+                mean = contour.reshape(-1, 2).mean(axis=0)
+                centre = (float(mean[0]), float(mean[1]))
+            # A 1px line encloses no area; half its perimeter is its pixel count.
+            area = max(cv2.contourArea(contour), cv2.arcLength(contour, True) / 2)
             if area <= MIN_CONTOUR_AREA or area > max_area:
                 continue
             # Rotated rectangle, so a diagonal edge is as thin as a flat one.
             (_, _), (rw, rh), _ = cv2.minAreaRect(contour)
             short, long_ = min(rw, rh), max(rw, rh)
-            if short < 2 or long_ > MAX_ASPECT * short:
+            if shape and (short < min_side or long_ > max_aspect * max(short, 1e-6)):
                 continue
             blobs.append(
                 {
                     "contour": contour,
-                    "center": (
-                        moments["m10"] / moments["m00"],
-                        moments["m01"] / moments["m00"],
-                    ),
+                    "center": centre,
                     "area": area,
                 }
             )
@@ -640,7 +650,7 @@ class DetectionWorker(QtCore.QThread):
         solid = []
         for group in self._group_blobs(blobs):
             hull_area = cv2.contourArea(cv2.convexHull(group["contour"]))
-            if hull_area > 0 and group["area"] / hull_area < MIN_FILL:
+            if shape and hull_area > 0 and group["area"] / hull_area < min_fill:
                 continue
             if group["area"] > max_area:
                 continue

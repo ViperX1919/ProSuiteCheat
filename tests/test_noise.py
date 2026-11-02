@@ -82,6 +82,17 @@ check("a thin stripe is not a target", len(detect(img, noise_filter=0)[0]) == 0)
 img = frame(); cv2.line(img, (10, 10), (390, 60), RED, 3)
 check("a hairline edge is not a target", len(detect(img)[0]) == 0)
 
+# --- thin outline targets: turning the filters down must keep them ---
+img = frame(); cv2.rectangle(img, (150, 150), (250, 250), RED, 1)
+check("1px outline box is lost with default filters", len(detect(img)[0]) == 0)
+check("1px outline box survives with noise and shape filters off",
+      len(detect(img, noise_filter=0, shape_filter=0)[0]) == 1)
+img = frame(); cv2.line(img, (20, 300), (380, 304), RED, 1)
+check("a 1px line is kept when the shape filter is off",
+      len(detect(img, noise_filter=0, shape_filter=0)[0]) == 1)
+check("lower shape strength is more permissive",
+      len(detect(img, noise_filter=0, shape_filter=3)[0]) >= len(detect(img, noise_filter=0, shape_filter=10)[0]))
+
 # --- speckle ---
 rng = np.random.default_rng(1)
 img = frame()
