@@ -30,6 +30,8 @@ def collect(window) -> dict[str, Any]:
         "detection_color": window.detection_color.name(),
         "prediction_color": window.prediction_color.name(),
         "tolerance": window.tolerance_slider.value(),
+        "sat_floor": window.sat_floor_slider.value(),
+        "val_floor": window.val_floor_slider.value(),
         "smoothness": window.smoothness_slider.value(),
         "speed": window.speed_slider.value(),
         "priority": window.priority_dropdown.currentText(),
@@ -117,6 +119,8 @@ def apply(window, data: dict[str, Any]) -> None:
 def _apply_sliders(window, data: dict[str, Any]) -> None:
     for slider, key, default in (
         (window.tolerance_slider, "tolerance", 80),
+        (window.sat_floor_slider, "sat_floor", 100),
+        (window.val_floor_slider, "val_floor", 100),
         (window.smoothness_slider, "smoothness", 50),
         (window.speed_slider, "speed", 10),
         (window.y_offset_slider, "y_offset", 0),

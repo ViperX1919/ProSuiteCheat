@@ -12,6 +12,7 @@ python tests/test_radar.py      # bearing, distance, filtering
 python tests/test_prediction.py # kalman, lead, frame-rate independence
 python tests/test_egomotion.py  # world-frame tracking while the aim pins the target
 python tests/test_loop.py       # closed loop: no ringing when moves lag
+python tests/test_detection.py  # colour floors, frame stats, mask preview
 ```
 
 Run them all:

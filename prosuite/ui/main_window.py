@@ -257,6 +257,11 @@ class MainWindow(QWidget):
         tolerance = self._register(W.make_slider("Color Tolerance", 0, 255, 80))
         self.tolerance_slider = tolerance.input
 
+        sat_floor = self._register(W.make_slider("Min Saturation", 0, 255, 100))
+        self.sat_floor_slider = sat_floor.input
+        val_floor = self._register(W.make_slider("Min Brightness", 0, 255, 100))
+        self.val_floor_slider = val_floor.input
+
         smoothness = self._register(W.make_slider("Smoothness", 1, 100, 50))
         self.smoothness_slider = smoothness.input
 
@@ -296,6 +301,8 @@ class MainWindow(QWidget):
             aim_pos,
             y_offset,
             tolerance,
+            sat_floor,
+            val_floor,
             smoothness,
             speed,
         ):
@@ -568,6 +575,8 @@ class MainWindow(QWidget):
         for slider in (
             self.fov_slider,
             self.tolerance_slider,
+            self.sat_floor_slider,
+            self.val_floor_slider,
             self.smoothness_slider,
             self.speed_slider,
             self.y_offset_slider,
@@ -605,6 +614,8 @@ class MainWindow(QWidget):
                 self.detection_color.blue(),
             ),
             tolerance=self.tolerance_slider.value(),
+            sat_floor=self.sat_floor_slider.value(),
+            val_floor=self.val_floor_slider.value(),
             aim_enabled=self.features["aim"].is_on(),
             aim_key_held=self.key_states.get("aim", False),
             priority=self.priority_dropdown.currentText(),

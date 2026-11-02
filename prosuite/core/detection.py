@@ -8,8 +8,10 @@ through a queued signal.
 
 from __future__ import annotations
 
+import ctypes
 import logging
 import math
+import sys
 import threading
 import time
 from dataclasses import dataclass, replace
@@ -27,14 +29,13 @@ from .kalman import KalmanFilter
 log = logging.getLogger(__name__)
 
 #: Contours smaller than this many pixels are noise.
+#: Longest side, in pixels, of the mask copy sent to the preview panel.
+PREVIEW_SIZE = 180
 MIN_CONTOUR_AREA = 10
 #: Blobs whose centroids are within this distance are treated as one target.
 CONTOUR_GROUP_DISTANCE = 80
 #: Half-width of the square sampled under the crosshair for the triggerbot.
 TRIGGER_REGION = 4
-#: Saturation/value floor for a pixel to count as the target colour.
-SATURATION_FLOOR = 100
-VALUE_FLOOR = 100
 
 #: A measurement further than this from where the track says the target
 #: should be is a different target, not a fast one: start a new track.
@@ -82,6 +83,12 @@ class DetectionSettings:
     fov: int = 200
     detection_rgb: tuple[int, int, int] = (255, 0, 0)
     tolerance: int = 80
+    #: Minimum saturation / brightness (0-255) for a pixel to count. Lower
+    #: them to catch dark or washed-out versions of the target colour.
+    sat_floor: int = 100
+    val_floor: int = 100
+    #: Ship a small copy of the colour mask to the UI for the live preview.
+    preview_enabled: bool = False
 
     aim_enabled: bool = False
     aim_key_held: bool = False
@@ -121,6 +128,7 @@ class DetectionSettings:
             self.trigger_enabled
             or self.esp_enabled
             or self.radar_enabled
+            or self.preview_enabled
             or self.aiming
         )
 
@@ -144,6 +152,21 @@ class RadarTarget:
 
 
 @dataclass(frozen=True)
+class FrameStats:
+    """How the worker is doing, for the status strip."""
+
+    fps: float = 0.0
+    #: Time spent processing a frame, excluding the pacing sleep.
+    frame_ms: float = 0.0
+    #: "img", "cnt" or "none" - how camera motion is being measured.
+    ego: str = "none"
+    #: Measured input lag in frames, 0 if unknown.
+    lag: int = 0
+    #: "Screen" or the captured window's title.
+    source: str = "Screen"
+
+
+@dataclass(frozen=True)
 class DetectionResult:
     """What the worker found in one frame. Positions are in screen pixels."""
 
@@ -161,6 +184,26 @@ class DetectionResult:
     velocity_lines: tuple[tuple[tuple[int, int], tuple[int, int], float], ...] = ()
     #: Arraylist caption for the prediction entry, or None to leave it alone.
     prediction_label: str | None = None
+    stats: FrameStats | None = None
+    #: Small uint8 copy of the colour mask, only when the preview is open.
+    preview: np.ndarray | None = None
+
+
+def _begin_precise_timer() -> bool:
+    """Request 1 ms sleep granularity from Windows. True if it was granted."""
+    if sys.platform != "win32":
+        return False
+    try:
+        return ctypes.windll.winmm.timeBeginPeriod(1) == 0
+    except OSError:
+        return False
+
+
+def _end_precise_timer() -> None:
+    try:
+        ctypes.windll.winmm.timeEndPeriod(1)
+    except OSError:
+        pass
 
 
 class DetectionWorker(QtCore.QThread):
@@ -191,6 +234,11 @@ class DetectionWorker(QtCore.QThread):
         #: Screen rect of the ESP box we drew last frame, so it can be masked.
         self._last_box: tuple[int, int, int, int] | None = None
 
+        self._preview: np.ndarray | None = None
+        self._fps = 0.0
+        self._frame_ms = 0.0
+        self._loop_started = time.perf_counter()
+
         self._source: ScreenSource | WindowSource | None = None
         self._source_key: str | None = None
         self._next_source_try = 0.0
@@ -201,7 +249,7 @@ class DetectionWorker(QtCore.QThread):
         self._trigger_since: float | None = None
 
         # Cached HSV threshold, recomputed only when colour/tolerance change.
-        self._hsv_cache_key: tuple[tuple[int, int, int], int] | None = None
+        self._hsv_cache_key: tuple | None = None
         self._hsv_bounds: tuple[np.ndarray, np.ndarray] | None = None
 
     # --- public API (GUI thread) ---
@@ -224,6 +272,9 @@ class DetectionWorker(QtCore.QThread):
         self._running = True
         frame_budget = 1.0 / self.TARGET_FPS
 
+        # Windows sleeps in ~15.6 ms steps by default, which silently caps the
+        # loop near 64 FPS whatever TARGET_FPS says. Ask for 1 ms steps.
+        precise = _begin_precise_timer()
         try:
             while self._running:
                 started = time.perf_counter()
@@ -234,10 +285,37 @@ class DetectionWorker(QtCore.QThread):
                     time.sleep(0.1)
 
                 elapsed = time.perf_counter() - started
+                self._record_timing(started, elapsed)
                 if elapsed < frame_budget:
                     time.sleep(frame_budget - elapsed)
         finally:
             self._close_source()
+            if precise:
+                _end_precise_timer()
+
+    def _record_timing(self, started: float, elapsed: float) -> None:
+        """Smooth frame time and rate so the readout doesn't flicker."""
+        period = started - self._loop_started
+        self._loop_started = started
+        blend = 0.1
+        self._frame_ms += (elapsed * 1000.0 - self._frame_ms) * blend
+        if period > 0:
+            self._fps += (1.0 / period - self._fps) * blend
+
+    def _stats(self, cfg: DetectionSettings) -> FrameStats:
+        return FrameStats(
+            fps=self._fps,
+            frame_ms=self._frame_ms,
+            ego=self._ego_source,
+            lag=self._ego.lag,
+            source=cfg.capture_window or "Screen",
+        )
+
+    def _emit(self, result: DetectionResult) -> None:
+        """Send a result, stamped with timing stats and the mask preview."""
+        self.result_ready.emit(
+            replace(result, stats=self._stats(self._settings), preview=self._preview)
+        )
 
     # --- capture source ---
     def _close_source(self) -> None:
@@ -279,15 +357,17 @@ class DetectionWorker(QtCore.QThread):
 
     def _process_frame(self, cfg: DetectionSettings) -> None:
         if not cfg.should_scan:
+            self._preview = None
             self._reset_tracking()
             self._aimer.reset_carry()
             self._aimer.take_sent()
-            self.result_ready.emit(DetectionResult())
+            self._emit(DetectionResult())
             return
 
         source = self._ensure_source(cfg)
         if source is None:
-            self.result_ready.emit(DetectionResult())
+            self._preview = None
+            self._emit(DetectionResult())
             return
 
         cx, cy = cfg.screen_center
@@ -296,6 +376,7 @@ class DetectionWorker(QtCore.QThread):
             return
         region, bgr, stamp = grabbed
         mask = self._colour_mask(bgr, cfg)
+        self._preview = self._make_preview(mask, cfg)
 
         # On a full-screen grab our own overlays are in the picture. Treat
         # them as not-there for both detection and the ego-motion estimate.
@@ -319,14 +400,14 @@ class DetectionWorker(QtCore.QThread):
         contours = self._find_targets(mask)
         if not contours:
             self._on_target_lost(cfg)
-            self.result_ready.emit(DetectionResult())
+            self._emit(DetectionResult())
             return
 
         centroids = np.array([c["center"] for c in contours])
         radar = self._build_radar(contours, centroids, cfg) if cfg.radar_enabled else ()
 
         if not (cfg.esp_enabled or cfg.aiming):
-            self.result_ready.emit(DetectionResult(radar_targets=radar))
+            self._emit(DetectionResult(radar_targets=radar))
             return
 
         self._emit_target(contours, centroids, region, mask, radar, cfg, stamp)
@@ -377,6 +458,17 @@ class DetectionWorker(QtCore.QThread):
 
         return mask if mask.any() else None
 
+    @staticmethod
+    def _make_preview(mask: np.ndarray, cfg: DetectionSettings) -> np.ndarray | None:
+        if not cfg.preview_enabled:
+            return None
+        side = max(mask.shape)
+        scale = PREVIEW_SIZE / side
+        if scale >= 1.0:
+            return mask.copy()
+        size = (max(1, round(mask.shape[1] * scale)), max(1, round(mask.shape[0] * scale)))
+        return cv2.resize(mask, size, interpolation=cv2.INTER_AREA)
+
     # --- colour filter ---
     def _colour_mask(self, bgr: np.ndarray, cfg: DetectionSettings) -> np.ndarray:
         hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
@@ -394,7 +486,7 @@ class DetectionWorker(QtCore.QThread):
         Hue is circular (0 and 179 are neighbours), so a window that runs off
         either end - which is every red - wraps into a second range.
         """
-        key = (cfg.detection_rgb, cfg.tolerance)
+        key = (cfg.detection_rgb, cfg.tolerance, cfg.sat_floor, cfg.val_floor)
         if key != self._hsv_cache_key:
             r, g, b = cfg.detection_rgb
             swatch = np.array([[[b, g, r]]], dtype=np.uint8)
@@ -404,7 +496,7 @@ class DetectionWorker(QtCore.QThread):
 
             def window(lo: int, hi: int):
                 return (
-                    np.array([lo, SATURATION_FLOOR, VALUE_FLOOR]),
+                    np.array([lo, cfg.sat_floor, cfg.val_floor]),
                     np.array([hi, 255, 255]),
                 )
 
@@ -642,7 +734,7 @@ class DetectionWorker(QtCore.QThread):
             mask if cfg.esp_enabled and cfg.esp_mode == "Pixel" else None
         )
 
-        self.result_ready.emit(
+        self._emit(
             DetectionResult(
                 has_target=True,
                 bbox=(x, y, w, h),
