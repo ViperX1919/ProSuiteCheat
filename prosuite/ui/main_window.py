@@ -35,6 +35,7 @@ from .overlays import (
     PredictionAimOverlay,
     RadarWidget,
     RenderOverlay,
+    ToastOverlay,
 )
 from .sections import CheatMenuPage, CollapsibleSection, make_separator
 from .status import StatusStrip
@@ -118,6 +119,7 @@ class MainWindow(QWidget):
         self.fov_overlay = FOVOverlay(self.esp_color)
         self.render_overlay = RenderOverlay()
         self.crosshair_overlay = CrosshairOverlay()
+        self.toast = ToastOverlay()
         self.prediction_overlay = PredictionAimOverlay(self.prediction_color)
         self.radar_widget = RadarWidget(esp_color=self.esp_color)
         self.array_list = ArrayListWidget()
@@ -557,8 +559,15 @@ class MainWindow(QWidget):
         self.capture_dropdown = capture_select.input
         self.capture_dropdown.setMinimumWidth(220)
 
+        notify = self._register(W.make_toggle("Module Notifications", self.theme_color))
+        self._add_feature(Feature(name="notifications", toggle=notify.input))
+        notify.input.setChecked(True)
+
         page.add_heading("Capture")
         page.add_widget(capture_select.widget)
+        page.add_separator()
+        page.add_heading("Interface")
+        page.add_widget(notify.widget)
         page.add_separator()
         page.add_heading("Config")
         page.add_widget(self.save_button)
@@ -616,6 +625,11 @@ class MainWindow(QWidget):
             lambda on: self._set_overlay_visible(self.crosshair_overlay, on)
         )
         self.crosshair_color_button.clicked.connect(self._pick_crosshair_color)
+        for feature in self.features.values():
+            if feature.shows_in_arraylist:
+                feature.toggle.toggled.connect(
+                    lambda on, f=feature: self._announce(f.display_name, on)
+                )
         self.crosshair_style_dropdown.currentTextChanged.connect(
             lambda text: self.crosshair_overlay.configure(style=text)
         )
@@ -748,6 +762,14 @@ class MainWindow(QWidget):
     def _sync_own_rects(self) -> None:
         if self._own_rects() != self.worker.settings.ignore_rects:
             self.push_settings()
+
+    # --- notifications ---
+    def _announce(self, name: str, on: bool) -> None:
+        """Show a toast for a module switch, unless it isn't the user's doing."""
+        if getattr(self, "_toasts_muted", False) or not self.features["notifications"].is_on():
+            return
+        self.toast.set_accent(self.theme_color)
+        self.toast.notify(name, on)
 
     # --- capture source ---
     def capture_window(self) -> str:
@@ -1047,6 +1069,7 @@ class MainWindow(QWidget):
             self.render_overlay,
             self.fov_overlay,
             self.crosshair_overlay,
+            self.toast,
             self.radar_widget,
             self.prediction_overlay,
         ):

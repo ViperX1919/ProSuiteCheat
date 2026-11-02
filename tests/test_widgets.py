@@ -166,6 +166,35 @@ frame = _np.full((20, 20, 3), 255, _np.uint8)
 check("white crosshair is invisible to the colour filter",
       not DetectionWorker(_A())._colour_mask(frame, DetectionSettings(detection_rgb=(255, 0, 0))).any())
 
+# --- toasts ---
+t = win.toast
+shown = []
+real_notify = t.notify
+t.notify = lambda name, on: (shown.append((name, on)), real_notify(name, on))
+win.features["aim"].toggle.setChecked(True); pump(40)
+check("switching a module on shows a toast", shown and shown[-1] == ("Smooth Aim", True), f"{shown}")
+win.features["aim"].toggle.setChecked(False); pump(40)
+check("switching it off shows a toast", shown[-1] == ("Smooth Aim", False))
+check("toast becomes visible", t.isVisible() or t.visible_amount > 0)
+pump(2200)
+check("toast hides itself afterwards", not t.isVisible() and t.visible_amount <= 0.01, f"{t.visible_amount:.2f}")
+n = len(shown)
+win.features["notifications"].toggle.setChecked(False)
+win.features["aim"].toggle.setChecked(True); pump(40)
+check("notifications can be turned off", len(shown) == n)
+win.features["notifications"].toggle.setChecked(True)
+win.features["aim"].toggle.setChecked(False); pump(40)
+n = len(shown)
+_S.apply(win, {"toggles": {"aim": True, "esp": True, "radar": True, "crosshair": True}})
+pump(40)
+check("loading a config does not spam toasts", len(shown) == n, f"{len(shown) - n} extra")
+check("...but the toggles did change", win.features["aim"].is_on() and win.features["radar"].is_on())
+for name in ("aim", "esp", "radar", "crosshair"):
+    win.features[name].toggle.setChecked(False)
+pump(40)
+win.toast.hide()
+t.notify = real_notify
+
 win.close()
 print("\nFAILURES:", failures or "none")
 sys.exit(1 if failures else 0)

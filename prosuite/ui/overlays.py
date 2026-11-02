@@ -144,6 +144,105 @@ class CrosshairOverlay(_OverlayBase):
             painter.drawEllipse(c, n, n)
 
 
+class ToastOverlay(_OverlayBase):
+    """Brief "Module ON/OFF" notice that drops in at the top of the screen.
+
+    One animation drives the whole life of a toast - slide in, hold, fade out
+    - so a new toast simply restarts it and there is never a stale animation
+    group left running underneath.
+    """
+
+    WIDTH, HEIGHT = 300, 46
+    TOP_MARGIN = 36
+    SLIDE = 14
+    #: Phases in milliseconds: slide in, hold, fade out.
+    IN, HOLD, OUT = 180, 1500, 320
+
+    GOOD, OFF = QColor("#3DDC84"), QColor("#8A8A8A")
+
+    def __init__(self):
+        super().__init__()
+        self.setFixedSize(self.WIDTH, self.HEIGHT + self.SLIDE)
+        self._name = ""
+        self._on = True
+        self._accent = QColor(ACCENT_RED)
+        #: 0..1 visibility and 0..1 slide progress, from the single animation.
+        self._opacity = 0.0
+        self._slide = 0.0
+
+        self._life = QtCore.QVariantAnimation(self)
+        self._life.setDuration(self.IN + self.HOLD + self.OUT)
+        self._life.setStartValue(0.0)
+        self._life.setEndValue(float(self._life.duration()))
+        self._life.valueChanged.connect(self._on_tick)
+        self._life.finished.connect(self.hide)
+
+    @property
+    def visible_amount(self) -> float:
+        return self._opacity
+
+    def set_accent(self, color: QColor) -> None:
+        self._accent = QColor(color)
+
+    def notify(self, name: str, on: bool) -> None:
+        self._name, self._on = name, on
+        centre = self.screen_geometry().center()
+        top = self.screen_geometry().top() + self.TOP_MARGIN
+        self.move(centre.x() - self.WIDTH // 2, top)
+        self._life.stop()
+        self._life.start()
+        self.show()
+
+    def _on_tick(self, ms) -> None:
+        ms = float(ms)
+        if ms < self.IN:
+            t = ms / self.IN
+            ease = 1 - (1 - t) ** 3  # ease-out
+            self._opacity, self._slide = ease, ease
+        elif ms < self.IN + self.HOLD:
+            self._opacity = self._slide = 1.0
+        else:
+            t = (ms - self.IN - self.HOLD) / self.OUT
+            self._opacity, self._slide = 1.0 - t, 1.0
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        if self._opacity <= 0:
+            return
+        painter = QPainter(self)
+        try:
+            painter.setRenderHint(QPainter.Antialiasing)
+            painter.setOpacity(self._opacity)
+            y = self.SLIDE * (self._slide - 1.0) + self.SLIDE
+            card = QtCore.QRectF(0, y, self.WIDTH, self.HEIGHT)
+
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(18, 18, 18, 238))
+            painter.drawRoundedRect(card, 12, 12)
+
+            state = self.GOOD if self._on else self.OFF
+            bar = QtCore.QRectF(card.x() + 10, card.y() + 11, 4, card.height() - 22)
+            painter.setBrush(self._accent if self._on else self.OFF)
+            painter.drawRoundedRect(bar, 2, 2)
+
+            font = painter.font()
+            font.setPointSize(10)
+            font.setBold(True)
+            painter.setFont(font)
+            painter.setPen(QColor("#FFFFFF"))
+            painter.drawText(
+                card.adjusted(26, 0, -70, 0), Qt.AlignVCenter | Qt.AlignLeft, self._name
+            )
+            painter.setPen(state)
+            painter.drawText(
+                card.adjusted(0, 0, -18, 0),
+                Qt.AlignVCenter | Qt.AlignRight,
+                "ON" if self._on else "OFF",
+            )
+        finally:
+            painter.end()
+
+
 class RenderOverlay(_OverlayBase):
     """Draws the ESP box/corners/head-circle/pixel mask over the target."""
 

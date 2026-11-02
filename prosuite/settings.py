@@ -101,6 +101,14 @@ def _point(value: Any) -> tuple[int, int] | None:
 def apply(window, data: dict[str, Any]) -> None:
     """Push a settings dict back into the window."""
     # FOV depends on the current resolution, so range first, then value.
+    window._toasts_muted = True
+    try:
+        _apply(window, data)
+    finally:
+        window._toasts_muted = False
+
+
+def _apply(window, data: dict[str, Any]) -> None:
     window.update_fov_range()
     fov = data.get("fov")
     if isinstance(fov, int):
@@ -235,10 +243,14 @@ def restore(window, path: str | None = None) -> bool:
         # Everything comes back as it was except the modules that act on
         # their own: nothing should start clicking or steering the moment
         # the app opens.
-        for name in LAUNCH_OFF:
-            feature = window.features.get(name)
-            if feature is not None and feature.toggle is not None:
-                feature.toggle.setChecked(False)
+        window._toasts_muted = True
+        try:
+            for name in LAUNCH_OFF:
+                feature = window.features.get(name)
+                if feature is not None and feature.toggle is not None:
+                    feature.toggle.setChecked(False)
+        finally:
+            window._toasts_muted = False
         log.info("Restored settings from %s", path)
         return True
     except Exception:
