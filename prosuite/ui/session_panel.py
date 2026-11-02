@@ -89,5 +89,6 @@ class SessionPanel(QWidget):
         for name in self._names:
             name.setStyleSheet(f"color:{text};")
         for value in self.values.values():
-            value.setStyleSheet(f"color:{accent.name()};font-weight:bold;")
+            # Lightened, so a dark accent still reads against a dark panel.
+            value.setStyleSheet(f"color:{accent.lighter(170).name()};font-weight:bold;")
         self.note.setStyleSheet(f"color:{rgba};font-size:11px;")

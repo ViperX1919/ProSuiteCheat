@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QColorDialog,
     QHBoxLayout,
+    QLabel,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -67,10 +68,14 @@ class Feature:
     bind_mode: str = TOGGLE
     #: Which feature's switch this hotkey flips, when it isn't its own.
     controls: str | None = None
+    #: Caption for the unbound keybind button, when the default won't do.
+    prompt: str = ""
 
     @property
     def keybind_prompt(self) -> str:
         """The button caption shown while no key is bound."""
+        if self.prompt:
+            return self.prompt
         return "Set Hold Key" if self.bind_mode == HOLD else "Set Toggle Key"
 
     @property
@@ -581,6 +586,25 @@ class MainWindow(QWidget):
         page.add_heading("Interface")
         page.add_widget(notify.widget)
         page.add_separator()
+        page.add_heading("Safety")
+        panic_key = self._register(W.make_keybind_button("Set Panic Key"))
+        self._add_feature(
+            Feature(
+                name="panic",
+                keybind=panic_key.input,
+                bind_mode=TOGGLE,
+                prompt="Set Panic Key",
+            )
+        )
+        panic_row = QWidget()
+        panic_layout = QHBoxLayout(panic_row)
+        panic_layout.setContentsMargins(0, 0, 0, 0)
+        panic_label = QLabel("Panic key: turns Smooth Aim and Triggerbot off")
+        panic_layout.addWidget(panic_label, 1)
+        panic_layout.addWidget(panic_key.widget)
+        self._panic_label = panic_label
+        page.add_widget(panic_row)
+        page.add_separator()
         page.add_heading("Session")
         self.session_panel = SessionPanel()
         page.add_widget(self.session_panel)
@@ -881,9 +905,29 @@ class MainWindow(QWidget):
         if not pressed:
             return
 
+        if name == "panic":
+            self.panic()
+            return
+
         target = self.features.get(feature.controls or name)
         if target is not None and target.toggle is not None:
             target.toggle.setChecked(not target.toggle.isChecked())
+
+    #: What the panic key switches off: the modules that act on their own.
+    PANIC_OFF = ("aim", "triggerbot")
+
+    def panic(self) -> bool:
+        """Switch off everything that moves the mouse or clicks. True if any was on."""
+        was_on = False
+        for name in self.PANIC_OFF:
+            feature = self.features.get(name)
+            if feature is not None and feature.is_on():
+                feature.toggle.setChecked(False)
+                was_on = True
+        # Held-key state too, so a held aim key can't resume it on its own.
+        self.key_states["aim"] = False
+        self.push_settings()
+        return was_on
 
     def _on_hotkey_assigned(self, name: str, label: str) -> None:
         feature = self.features.get(name)
@@ -1074,6 +1118,7 @@ class MainWindow(QWidget):
         self.status.apply_theme(palette.content_box, palette.text, self.theme_color)
         self.mask_preview.apply_theme(self.theme_color, palette.background, palette.text)
         self.session_panel.apply_theme(palette.text, self.theme_color)
+        self._panic_label.setStyleSheet(f"color:{palette.text};")
         self.accent_swatches.set_current(self.theme_color)
 
     # ------------------------------------------------------------------

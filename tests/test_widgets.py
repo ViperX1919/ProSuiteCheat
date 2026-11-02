@@ -211,6 +211,25 @@ check("panel shows time to lock", win.session_panel.values["lock_time"].text().e
 win.session_panel.reset_button.click(); pump(50)
 check("reset clears the readout", win.session_panel.values["targets"].text() == "0" and win.session_panel.values["on_target"].text() == "-")
 
+# --- panic key ---
+win.features["aim"].toggle.setChecked(True)
+win.features["triggerbot"].toggle.setChecked(True)
+win.key_states["aim"] = True
+check("panic reports it switched something off", win.panic() is True)
+check("panic turns aim and triggerbot off", not win.features["aim"].is_on() and not win.features["triggerbot"].is_on())
+check("panic clears the held aim key", win.key_states["aim"] is False)
+check("worker is told immediately", not win.worker.settings.aim_enabled and not win.worker.settings.trigger_enabled and not win.worker.settings.aim_key_held)
+check("panic with nothing on reports False", win.panic() is False)
+win.features["esp"].toggle.setChecked(True)
+win.features["aim"].toggle.setChecked(True)
+win._on_hotkey("panic", True)
+check("panic hotkey runs it", not win.features["aim"].is_on())
+check("panic leaves visuals alone", win.features["esp"].is_on())
+win.features["esp"].toggle.setChecked(False)
+win._on_hotkey("panic", False)
+check("panic ignores key release", True)
+check("panic key button exists", win.features["panic"].keybind is not None and win.features["panic"].keybind.text() == "Set Panic Key")
+
 win.close()
 print("\nFAILURES:", failures or "none")
 sys.exit(1 if failures else 0)
