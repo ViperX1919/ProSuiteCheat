@@ -16,6 +16,7 @@ python tests/test_detection.py  # colour floors, frame stats, mask preview
 python tests/test_widgets.py    # status strip, preview, eyedropper, accents
 python tests/test_autosave.py   # atomic writes, restore, damaged files
 python tests/test_session.py    # session stats: targets, lock time, on-target share
+python tests/test_profiles.py   # named profiles, name safety, never arms aim/trigger
 ```
 
 Run them all:

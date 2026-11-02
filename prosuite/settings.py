@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from typing import Any
 
 from PySide6.QtCore import QObject, QTimer
@@ -225,6 +226,23 @@ def autosave_path() -> str:
     return os.path.join(config_dir(), AUTOSAVE_NAME)
 
 
+def apply_safely(window, data: dict[str, Any]) -> None:
+    """Apply settings, except that nothing starts acting on its own.
+
+    Everything comes back as it was except the modules that move the mouse or
+    click: loading a saved state must never start clicking or steering.
+    """
+    apply(window, data)
+    window._toasts_muted = True
+    try:
+        for name in LAUNCH_OFF:
+            feature = window.features.get(name)
+            if feature is not None and feature.toggle is not None:
+                feature.toggle.setChecked(False)
+    finally:
+        window._toasts_muted = False
+
+
 def restore(window, path: str | None = None) -> bool:
     """Load the autosave into ``window``. True if something was applied.
 
@@ -239,18 +257,7 @@ def restore(window, path: str | None = None) -> bool:
             data = json.load(handle)
         if not isinstance(data, dict):
             raise ValueError("autosave is not a JSON object")
-        apply(window, data)
-        # Everything comes back as it was except the modules that act on
-        # their own: nothing should start clicking or steering the moment
-        # the app opens.
-        window._toasts_muted = True
-        try:
-            for name in LAUNCH_OFF:
-                feature = window.features.get(name)
-                if feature is not None and feature.toggle is not None:
-                    feature.toggle.setChecked(False)
-        finally:
-            window._toasts_muted = False
+        apply_safely(window, data)
         log.info("Restored settings from %s", path)
         return True
     except Exception:
@@ -311,6 +318,86 @@ class AutoSaver(QObject):
             return False
         self._last = snapshot
         return True
+
+
+# --- profiles ---
+PROFILE_EXT = ".json"
+_PROFILE_BAD = re.compile(r"[^A-Za-z0-9 _.\-]")
+#: Windows treats these as devices whatever the extension ("con.json" is the
+#: console), so a profile with one of these names would not be a file at all.
+_RESERVED = {"CON", "PRN", "AUX", "NUL"} | {f"COM{i}" for i in range(1, 10)} | {
+    f"LPT{i}" for i in range(1, 10)
+}
+
+
+def profiles_dir() -> str:
+    path = os.path.join(config_dir(), "profiles")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def clean_profile_name(name: str) -> str:
+    """A safe file stem for ``name``, or "" if nothing usable is left.
+
+    Anything that could steer a path somewhere else - separators, drive
+    colons, dot-only names - is removed rather than trusted.
+    """
+    cleaned = _PROFILE_BAD.sub("", name or "").strip(" .")[:40]
+    if cleaned.split(".")[0].strip().upper() in _RESERVED:
+        cleaned = "_" + cleaned
+    return cleaned
+
+
+def profile_path(name: str, directory: str | None = None) -> str:
+    stem = clean_profile_name(name)
+    if not stem:
+        raise ValueError("empty profile name")
+    return os.path.join(directory or profiles_dir(), stem + PROFILE_EXT)
+
+
+def list_profiles(directory: str | None = None) -> list[str]:
+    folder = directory or profiles_dir()
+    try:
+        names = [
+            os.path.splitext(f)[0]
+            for f in os.listdir(folder)
+            if f.lower().endswith(PROFILE_EXT)
+        ]
+    except OSError:
+        return []
+    return sorted(names, key=str.lower)
+
+
+def save_profile(window, name: str, directory: str | None = None) -> str:
+    """Write the current state as a profile; returns the stored name."""
+    path = profile_path(name, directory)
+    temp = path + ".tmp"
+    with open(temp, "w", encoding="utf-8") as handle:
+        json.dump(collect(window), handle, indent=4)
+    os.replace(temp, path)
+    return os.path.splitext(os.path.basename(path))[0]
+
+
+def load_profile(window, name: str, directory: str | None = None) -> bool:
+    try:
+        path = profile_path(name, directory)
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        if not isinstance(data, dict):
+            raise ValueError("profile is not a JSON object")
+        apply_safely(window, data)
+        return True
+    except (OSError, ValueError):
+        log.exception("Could not load profile %r", name)
+        return False
+
+
+def delete_profile(name: str, directory: str | None = None) -> bool:
+    try:
+        os.remove(profile_path(name, directory))
+        return True
+    except (OSError, ValueError):
+        return False
 
 
 # --- dialogs ---

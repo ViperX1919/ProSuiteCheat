@@ -12,6 +12,7 @@ from PySide6.QtGui import QColor, QIcon
 from PySide6.QtWidgets import (
     QApplication,
     QColorDialog,
+    QInputDialog,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -580,6 +581,17 @@ class MainWindow(QWidget):
         self._add_feature(Feature(name="notifications", toggle=notify.input))
         notify.input.setChecked(True)
 
+        page.add_heading("Profiles")
+        profile_select = self._register(W.make_dropdown("Profile", ["(none)"]))
+        self.profile_dropdown = profile_select.input
+        self.profile_dropdown.setMinimumWidth(220)
+        self.profile_save_button = QPushButton("Save Current As Profile...")
+        self.profile_delete_button = QPushButton("Delete Selected Profile")
+        page.add_widget(profile_select.widget)
+        page.add_widget(self.profile_save_button)
+        page.add_widget(self.profile_delete_button)
+        page.add_separator()
+
         page.add_heading("Capture")
         page.add_widget(capture_select.widget)
         page.add_separator()
@@ -723,6 +735,10 @@ class MainWindow(QWidget):
         self.reset_ui_button.clicked.connect(self._reset_theme)
         self.accent_swatches.chosen.connect(self._set_accent)
         self.session_panel.reset_requested.connect(self._reset_session)
+        self.profile_dropdown.popupAboutToShow.connect(self.refresh_profiles)
+        self.profile_dropdown.activated.connect(self._profile_chosen)
+        self.profile_save_button.clicked.connect(self._save_profile_as)
+        self.profile_delete_button.clicked.connect(self._delete_profile)
         self.eyedropper_button.clicked.connect(self._start_eyedropper)
         self.save_button.clicked.connect(self._save_settings)
         self.load_button.clicked.connect(self._load_settings)
@@ -803,6 +819,45 @@ class MainWindow(QWidget):
     def _sync_own_rects(self) -> None:
         if self._own_rects() != self.worker.settings.ignore_rects:
             self.push_settings()
+
+    # --- profiles ---
+    def refresh_profiles(self) -> None:
+        from ..settings import list_profiles
+
+        combo = self.profile_dropdown
+        current = combo.currentText()
+        names = list_profiles()
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItems(names or ["(none)"])
+        if current in names:
+            combo.setCurrentText(current)
+        combo.blockSignals(False)
+
+    def _profile_chosen(self, index: int) -> None:
+        from ..settings import load_profile
+
+        name = self.profile_dropdown.itemText(index)
+        if name and name != "(none)" and load_profile(self, name):
+            self.toast.set_accent(self.theme_color)
+            self.toast.notify(f"Profile: {name}", True)
+
+    def _save_profile_as(self) -> None:
+        from ..settings import clean_profile_name, save_profile
+
+        name, ok = QInputDialog.getText(self, "Save Profile", "Profile name:")
+        if not ok or not clean_profile_name(name):
+            return
+        stored = save_profile(self, name)
+        self.refresh_profiles()
+        self.profile_dropdown.setCurrentText(stored)
+
+    def _delete_profile(self) -> None:
+        from ..settings import delete_profile
+
+        name = self.profile_dropdown.currentText()
+        if name and name != "(none)" and delete_profile(name):
+            self.refresh_profiles()
 
     # --- session statistics ---
     def _feed_session(self, result) -> None:
