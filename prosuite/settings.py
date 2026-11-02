@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Any
 
+from PySide6.QtCore import QObject, QTimer
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QFileDialog
 
@@ -192,6 +194,100 @@ def _apply_features(window, data: dict[str, Any]) -> None:
         section.set_collapsed(
             bool(collapsed.get(section.objectName(), True)), animate=False
         )
+
+
+# --- autosave ---
+AUTOSAVE_NAME = "autosave.json"
+#: Modules that are always off after a launch, whatever was saved.
+LAUNCH_OFF = ("aim", "triggerbot")
+
+
+def autosave_path() -> str:
+    return os.path.join(config_dir(), AUTOSAVE_NAME)
+
+
+def restore(window, path: str | None = None) -> bool:
+    """Load the autosave into ``window``. True if something was applied.
+
+    A missing file is normal (first run). A damaged one is set aside as
+    ``.bad`` instead of being retried - and overwritten - on every launch.
+    """
+    path = path or autosave_path()
+    if not os.path.exists(path):
+        return False
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        if not isinstance(data, dict):
+            raise ValueError("autosave is not a JSON object")
+        apply(window, data)
+        # Everything comes back as it was except the modules that act on
+        # their own: nothing should start clicking or steering the moment
+        # the app opens.
+        for name in LAUNCH_OFF:
+            feature = window.features.get(name)
+            if feature is not None and feature.toggle is not None:
+                feature.toggle.setChecked(False)
+        log.info("Restored settings from %s", path)
+        return True
+    except Exception:
+        log.exception("Could not restore %s; setting it aside", path)
+        try:
+            os.replace(path, path + ".bad")
+        except OSError:
+            pass
+        return False
+
+
+class AutoSaver(QObject):
+    """Writes the UI state to disk shortly after it changes.
+
+    Polls instead of hooking every widget's signal: one cheap dict compare a
+    few times a second is far less fragile than wiring forty controls, and
+    new controls are covered the moment they join :func:`collect`.
+    """
+
+    INTERVAL_MS = 2500
+
+    def __init__(self, window, path: str | None = None, parent=None):
+        super().__init__(parent or window)
+        self._window = window
+        self._path = path or autosave_path()
+        self._last: str | None = None
+        self._timer = QTimer(self)
+        self._timer.setInterval(self.INTERVAL_MS)
+        self._timer.timeout.connect(self.save_if_changed)
+
+    def start(self) -> None:
+        # Treat the just-restored state as already saved.
+        self._last = self._snapshot()
+        self._timer.start()
+
+    def stop(self) -> None:
+        self._timer.stop()
+
+    def _snapshot(self) -> str:
+        return json.dumps(collect(self._window), sort_keys=True)
+
+    def save_if_changed(self) -> bool:
+        try:
+            snapshot = self._snapshot()
+        except Exception:
+            log.exception("Could not collect settings for autosave")
+            return False
+        if snapshot == self._last:
+            return False
+
+        temp = self._path + ".tmp"
+        try:
+            with open(temp, "w", encoding="utf-8") as handle:
+                handle.write(snapshot)
+            os.replace(temp, self._path)  # atomic: never a half-written file
+        except OSError:
+            log.exception("Autosave to %s failed", self._path)
+            return False
+        self._last = snapshot
+        return True
 
 
 # --- dialogs ---

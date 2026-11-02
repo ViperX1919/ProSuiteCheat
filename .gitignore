@@ -13,3 +13,4 @@ dist/
 
 # Local dev launcher
 run_dev.bat
+config/autosave.json*

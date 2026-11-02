@@ -7,7 +7,7 @@ import sys
 
 from PySide6.QtWidgets import QApplication
 
-from . import logging_setup
+from . import logging_setup, settings
 from .ui.main_window import MainWindow
 
 
@@ -36,6 +36,11 @@ def main(argv: list[str] | None = None) -> int:
 
     app = QApplication(sys.argv[:1])
     window = MainWindow(enable_hotkeys=not args.no_hotkeys)
+    settings.restore(window)
+    autosaver = settings.AutoSaver(window)
+    autosaver.start()
+    # One last write on the way out, so changes in the final seconds count.
+    app.aboutToQuit.connect(autosaver.save_if_changed)
     window.show()
     return app.exec()
 
